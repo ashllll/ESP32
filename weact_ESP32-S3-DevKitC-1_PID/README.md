@@ -1,161 +1,210 @@
-# ESP32 PID Temperature Control System
-# ESP32 PID 温度控制系统
+# ESP32-S3 PID温度控制器
 
-This is a PID temperature control system project based on ESP32-S3-DevKitC-1 development board. The project uses PID algorithm to achieve precise temperature control and displays temperature and control parameters in real-time through an OLED display.
+基于ESP32-S3的温度控制器，使用MAX31865 PT100温度传感器和SHT40温湿度传感器，实现精确的温度控制和环境监测。
 
-这是一个基于 ESP32-S3-DevKitC-1 开发板的 PID 温度控制系统项目。该项目使用 PID 算法实现精确的温度控制，并通过 OLED 显示屏实时显示温度和控制参数。
+## 主要功能
 
-## Features | 功能特点
+- 使用MAX31865 PT100传感器进行高精度温度测量
+- 使用SHT40传感器监测环境温湿度
+- 基于QuickPID库实现PID温度控制
+- 使用旋转编码器进行温度设定和操作控制
+- 实时温度曲线显示和预测
+- 安全保护机制
 
-- Temperature acquisition using MAX31865 temperature sensor
-- Precise temperature control using PID algorithm
-- Parameter adjustment via rotary encoder
-- Real-time temperature and control parameter display on OLED
-- Temperature setpoint adjustment support
-- Online PID parameter tuning support
+## 硬件配置
 
-- 使用 MAX31865 温度传感器进行温度采集
-- 采用 PID 算法实现精确的温度控制
-- 通过旋转编码器进行参数调节
-- OLED 显示屏实时显示温度和控制参数
-- 支持温度设定值调节
-- 支持 PID 参数在线调节
+- 主控：ESP32-S3
+- 温度传感器：MAX31865 + PT100
+- 环境传感器：SHT40
+- 显示：SH1106 OLED (128x64)
+- 控制：旋转编码器
 
-## Hardware Requirements | 硬件要求
+## 软件功能
 
-- ESP32-S3-DevKitC-1 development board
-- MAX31865 temperature sensor
-- OLED display (SSD1306)
-- Rotary encoder
-- Heating element
-- Necessary connection wires
+### 温度控制
+- PID控制算法
+- 自适应PID参数调整
+- 温度滤波和校准
+- 多段温度控制
 
-- ESP32-S3-DevKitC-1 开发板
-- MAX31865 温度传感器
-- OLED 显示屏 (SSD1306)
+### 显示功能
+- 实时温度曲线显示
+- 温度预测功能
+- 网格线和温度刻度
+- 设定温度线显示
+- 环境温湿度显示
+- PWM输出百分比显示
+
+### 安全保护
+- 温度超限保护
+- 温度变化率监控
+- 紧急停止功能
+- 错误状态显示
+
+## 使用说明
+
+1. 旋转编码器用于调整设定温度
+2. 单击编码器按钮开始/停止加热
+3. 双击编码器按钮切换加热状态
+4. 温度曲线显示最近20个温度点
+5. 预测线显示5秒后的预测温度
+
+## 显示界面
+
+显示界面分为以下区域：
+- 标题区域：显示当前工作状态
+- 温度曲线区域：显示温度变化趋势
+- 当前温度显示：大字体显示当前温度
+- 控制按钮区域：显示设定温度
+- PWM显示：显示PWM输出百分比
+- 环境数据显示：显示环境温度
+
+## 安全特性
+
+- 最高温度限制：120°C
+- 温度变化率限制：5°C/s
+- 错误计数保护：连续3次错误触发紧急停止
+- 自动温度补偿
+
+## 开发环境
+
+- PlatformIO
+- Arduino框架
+- ESP32-S3开发板支持包
+
+## 依赖库
+
+- U8g2lib：OLED显示
+- Adafruit_MAX31865：PT100温度传感器
+- Adafruit_SHT4x：环境温湿度传感器
+- QuickPID：PID控制算法
+- AiEsp32RotaryEncoder：旋转编码器控制
+
+## 接线说明
+
+- MAX31865：
+  - CS: GPIO10
+  - MOSI: GPIO11
+  - MISO: GPIO12
+  - SCK: GPIO13
+- SHT40：
+  - SDA: GPIO8
+  - SCL: GPIO9
+- OLED：
+  - SDA: GPIO8
+  - SCL: GPIO9
+- 编码器：
+  - A: GPIO5
+  - B: GPIO6
+  - SW: GPIO4
+- PWM输出：
+  - MOS: GPIO14
+
+## 注意事项
+
+1. 首次使用时需要进行温度校准
+2. 确保散热良好，避免过热
+3. 定期检查传感器连接
+4. 注意观察温度变化趋势
+5. 及时处理异常情况
+
+## 项目概述
+这是一个基于ESP32-S3的温度控制系统，使用PID算法实现精确的温度控制。项目包含两个主要分支：
+
+1. `main`分支：使用MAX31865+PT100进行温度测量
+2. `feature/ads1115-ntc100k`分支：使用ADS1115+NTC100K进行温度测量
+
+## 硬件要求
+
+### 主分支 (MAX31865+PT100)
+- ESP32-S3开发板
+- MAX31865温度传感器
+- PT100铂电阻
+- OLED显示屏 (SH1106)
 - 旋转编码器
-- 加热元件
-- 其他必要的连接线
+- SHT40温湿度传感器
+- MOSFET驱动电路
 
-## Software Dependencies | 软件依赖
+### ADS1115+NTC100K分支
+- ESP32-S3开发板
+- ADS1115 16位ADC
+- NTC100K热敏电阻
+- 100KΩ分压电阻
+- OLED显示屏 (SH1106)
+- 旋转编码器
+- SHT40温湿度传感器
+- MOSFET驱动电路
 
-- PlatformIO
-- Arduino-ESP32 framework
-- Adafruit MAX31865 library
-- Adafruit SSD1306 library
-- PID library
-- U8g2 library
+## 功能特点
 
-- PlatformIO
-- Arduino-ESP32 框架
-- Adafruit MAX31865 库
-- Adafruit SSD1306 库
-- PID 库
-- U8g2 库
+- 精确的温度控制（±0.5°C）
+- 实时温度显示
+- 环境温湿度监测
+- 安全保护机制
+- 自适应PID控制
+- 紧急停止功能
 
-## Usage Instructions | 使用说明
+## 安装说明
 
-1. Clone the project to local
-2. Open with PlatformIO
-3. Install required dependencies
-4. Compile and upload to ESP32-S3 board
+1. 克隆仓库：
+```bash
+git clone https://github.com/ashllll/ESP32.git
+```
 
-1. 克隆项目到本地
-2. 使用 PlatformIO 打开项目
-3. 安装所需依赖库
-4. 编译并上传到 ESP32-S3 开发板
+2. 选择分支：
+```bash
+# 主分支
+git checkout main
 
-## Wiring Guide | 接线说明
+# 或ADS1115分支
+git checkout feature/ads1115-ntc100k
+```
 
-- MAX31865 Temperature Sensor:
-  - VCC -> 3.3V
-  - GND -> GND
-  - DO -> GPIO 19
-  - CS -> GPIO 5
-  - CLK -> GPIO 18
+3. 使用PlatformIO打开项目
 
-- MAX31865 温度传感器:
-  - VCC -> 3.3V
-  - GND -> GND
-  - DO -> GPIO 19
-  - CS -> GPIO 5
-  - CLK -> GPIO 18
+4. 根据所选分支连接相应硬件
 
-- OLED Display:
-  - SDA -> GPIO 21
-  - SCL -> GPIO 22
+## 硬件连接
 
-- OLED 显示屏:
-  - SDA -> GPIO 21
-  - SCL -> GPIO 22
+### ADS1115+NTC100K分支连接说明
 
-- Rotary Encoder:
-  - CLK -> GPIO 32
-  - DT -> GPIO 33
-  - SW -> GPIO 34
+#### ADS1115连接
+- VDD -> 3.3V
+- GND -> GND
+- SCL -> GPIO9
+- SDA -> GPIO8
+- A0 -> NTC100K分压电路
 
-- 旋转编码器:
-  - CLK -> GPIO 32
-  - DT -> GPIO 33
-  - SW -> GPIO 34
+#### NTC100K分压电路
+- NTC100K一端 -> 3.3V
+- NTC100K另一端 -> 100KΩ电阻 -> GND
+- 分压点 -> ADS1115 A0
 
-## Important Notes | 注意事项
+#### 其他连接
+- OLED SCL -> GPIO9
+- OLED SDA -> GPIO8
+- 编码器A -> GPIO5
+- 编码器B -> GPIO6
+- 编码器SW -> GPIO4
+- MOSFET -> GPIO14
 
-1. This project is for personal learning and research only
-2. Commercial use is strictly prohibited
-3. Please read the wiring guide carefully before use
-4. Ensure stable power supply
-5. Ensure safe use of heating elements and circuits
-6. Overcurrent protection circuit is recommended
-7. Please follow relevant safety regulations
+## 参数配置
 
-1. 本项目仅供个人学习和研究使用
-2. 禁止用于商业用途
-3. 使用前请仔细阅读接线说明
-4. 确保电源供应稳定
-5. 请确保加热元件和电路的安全使用
-6. 建议使用过流保护电路
-7. 使用时请遵守相关安全规范
+### NTC100K参数
+- B值: 3950
+- 参考温度: 25°C (298.15K)
+- 参考电阻: 100KΩ
+- 分压电阻: 100KΩ
 
-## Disclaimer | 免责声明
+### PID参数
+- Kp: 20.0
+- Ki: 0.5
+- Kd: 50.0
 
-This project is for learning and research purposes only. The author is not responsible for any losses that may occur from using this project, including but not limited to:
-- Device damage
-- Fire hazards
-- Personal injury
-- Property damage
-- Other accidents
+## 贡献指南
 
-By using this project, you acknowledge that you fully understand and accept these risks, and agree to assume all possible consequences.
+欢迎提交Pull Request或Issue来改进项目。
 
-本项目仅供学习和研究使用。作者不对使用本项目可能造成的任何损失负责，包括但不限于：
-- 设备损坏
-- 火灾
-- 人身伤害
-- 财产损失
-- 其他意外事故
+## 许可证
 
-使用本项目即表示您完全理解并接受这些风险，并同意自行承担所有可能的后果。
-
-## License | 许可证
-
-This project is licensed under the [MIT License](LICENSE), but limited to personal use only. Commercial use is prohibited.
-
-本项目采用 [MIT License](LICENSE) 许可证，但仅限个人使用，禁止商业用途。
-
-## Author | 作者
-
-- Author: Joe Ash
-- 作者：Joe Ash
-
-## Acknowledgments | 致谢
-
-Thanks to all contributors of the open-source libraries, especially:
-- Adafruit for sensor libraries
-- PlatformIO team for development environment
-- ESP32 open-source community
-
-感谢所有开源库的贡献者，特别是：
-- Adafruit 公司提供的传感器库
-- PlatformIO 团队提供的开发环境
-- ESP32 开源社区的支持
+MIT License
