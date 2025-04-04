@@ -1,11 +1,11 @@
 #include <U8g2lib.h>
-#include <Adafruit_MAX31865.h>
+#include <Adafruit_ADS1X15.h>
 #include <Adafruit_SHT4x.h>
 #include <QuickPID.h>
 #include <AiEsp32RotaryEncoder.h>
+#include <EEPROM.h>
 
 // 定义常量
-const int CS_PIN = 10;
 const int MOS_PIN = 14;  // GPIO14用于PWM输出
 const int MIN_TEMPERATURE = 0;
 const int MAX_TEMPERATURE = 100;
@@ -18,6 +18,17 @@ const unsigned long SAFETY_CHECK_INTERVAL = 1000; // 安全检查间隔
 const int MAX_ERROR_COUNT = 3; // 最大错误计数
 const float TEMP_CHANGE_THRESHOLD = 5.0; // 温度变化阈值 (°C/s)
 
+// NTC100K参数
+const float BETA = 3950.0;  // B值
+const float T0 = 298.15;    // 参考温度(K)
+const float R0 = 100000.0;  // 参考电阻值(Ω)
+const float R1 = 100000.0;  // 分压电阻值(Ω)
+
+// ADC采样参数
+const int ADC_SAMPLES = 16;  // ADC采样次数
+const float ADC_VREF = 3.3;  // ADC参考电压
+const float ADC_RESOLUTION = 32767.0;  // ADS1115 16位分辨率
+
 // PWM配置
 const int PWM_CHANNEL = 0;    // 使用LEDC通道0
 const int PWM_FREQ = 25000;   // PWM频率25kHz
@@ -26,8 +37,8 @@ const int PWM_RESOLUTION = 8; // 8位分辨率（0-255）
 // OLED 显示屏定义
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 9, 8);
 
-// MAX31865 传感器定义
-Adafruit_MAX31865 max31865 = Adafruit_MAX31865(CS_PIN);
+// ADS1115 定义
+Adafruit_ADS1115 ads;  // 使用ADS1115
 
 // SHT40 传感器定义
 Adafruit_SHT4x sht40;
@@ -93,6 +104,81 @@ const int FILTER_SIZE = 5;
 float tempReadings[FILTER_SIZE] = {0};
 int filterIndex = 0;
 
+// 温度校准参数
+struct CalibrationParams {
+    float offset = 0.0;      // 温度偏移
+    float gain = 1.0;        // 温度增益
+    float vref_offset = 0.0; // 参考电压偏移
+} calibration;
+
+// 温度漂移补偿
+struct DriftCompensation {
+    float lastStableTemp = 0.0;
+    unsigned long lastStableTime = 0;
+    const unsigned long STABILITY_TIME = 5000; // 5秒稳定时间
+    const float MAX_DRIFT_RATE = 0.1; // 最大漂移率 (°C/s)
+} driftComp;
+
+// EEPROM配置
+const int EEPROM_SIZE = 512;
+const int CALIBRATION_ADDR = 0;
+
+// 多点校准参数
+struct MultiPointCalibration {
+    float points[3][2];  // [温度, ADC值]
+    int pointCount = 0;
+    const int MAX_POINTS = 3;
+} multiCal;
+
+// 温度诊断参数
+struct TemperatureDiagnostics {
+    float minTemp = 1000.0;      // 最小温度
+    float maxTemp = -1000.0;     // 最大温度
+    float avgTemp = 0.0;         // 平均温度
+    float stdDev = 0.0;          // 标准差
+    unsigned long sampleCount = 0; // 采样计数
+    float sumTemp = 0.0;         // 温度总和
+    float sumTempSquared = 0.0;  // 温度平方和
+    unsigned long lastDiagnosticTime = 0;
+    const unsigned long DIAGNOSTIC_INTERVAL = 60000; // 1分钟诊断间隔
+} tempDiagnostics;
+
+// 温度记录参数
+struct TemperatureLog {
+    static const int LOG_SIZE = 100;  // 记录100个点
+    float temperatures[LOG_SIZE];     // 温度记录
+    unsigned long timestamps[LOG_SIZE]; // 时间戳
+    int logIndex = 0;                // 当前记录索引
+    bool isFull = false;             // 记录是否已满
+    const unsigned long LOG_INTERVAL = 1000; // 1秒记录间隔
+    unsigned long lastLogTime = 0;    // 上次记录时间
+} tempLog;
+
+// 温度曲线显示参数
+struct TemperatureGraph {
+    static const int GRAPH_WIDTH = 120;
+    static const int GRAPH_HEIGHT = 40;
+    static const int GRAPH_X = 0;
+    static const int GRAPH_Y = 20;
+    static const int POINT_COUNT = 20;  // 显示20个点
+    static const int GRID_COUNT = 5;    // 网格线数量
+    float minTemp = 0.0;
+    float maxTemp = 100.0;
+    float points[POINT_COUNT] = {0};
+    int pointIndex = 0;
+    float lastSmoothedTemp = 0.0;  // 用于平滑曲线
+    const float SMOOTHING_FACTOR = 0.3;  // 平滑因子
+} tempGraph;
+
+// 温度预测参数
+struct TemperaturePrediction {
+    float currentTemp = 0.0;
+    float trend = 0.0;
+    float predictedTemp = 0.0;
+    unsigned long predictionTime = 0;
+    const unsigned long PREDICTION_INTERVAL = 5000; // 5秒预测间隔
+} tempPred;
+
 // 函数声明
 void updateDisplay(float temperature, float pwm, bool isHeating);
 void adjustPIDParameters();
@@ -100,6 +186,19 @@ void displayError(const char* message);
 void performSafetyCheck(float temperature);
 float getFilteredTemperature(float rawTemperature);
 void emergencyStop();
+float getNtcTemperature();
+void calibrateTemperature(float knownTemp);
+void saveCalibrationToEEPROM();
+void loadCalibrationFromEEPROM();
+void addCalibrationPoint(float knownTemp);
+void calculateCalibrationParams();
+void autoTemperatureCompensation();
+void performTemperatureDiagnostics(float currentTemp);
+void logTemperature(float temperature);
+float getTemperatureTrend();
+void updateTemperatureGraph(float temperature);
+void predictTemperature(float currentTemp, float trend);
+void drawTemperatureGraph();
 
 void IRAM_ATTR readEncoderISR() {
   encoder.readEncoder_ISR();
@@ -109,10 +208,14 @@ void setup() {
   Serial.begin(115200);
   u8g2.begin();
 
-  if (!max31865.begin(MAX31865_3WIRE)) {
-    displayError("MAX31865传感器初始化失败");
+  // 初始化ADS1115
+  if (!ads.begin()) {
+    displayError("ADS1115初始化失败");
     errorState = true;
   }
+  // 设置ADS1115增益和采样率
+  ads.setGain(GAIN_ONE);  // +/-4.096V
+  ads.setDataRate(RATE_ADS1115_860SPS); // 最高采样率
 
   if (!sht40.begin()) {
     displayError("SHT40传感器初始化失败");
@@ -132,6 +235,11 @@ void setup() {
   myPID.SetMode(QuickPID::Control::automatic);
   myPID.SetOutputLimits(0, 255);
   myPID.SetSampleTimeUs(50000); // 50ms采样时间
+
+  // 初始化EEPROM并加载校准参数
+  EEPROM.begin(EEPROM_SIZE);
+  loadCalibrationFromEEPROM();
+  EEPROM.end();
 }
 
 void loop() {
@@ -171,8 +279,21 @@ void loop() {
     lastUpdate = now;
     
     // 读取并过滤温度
-    float rawTemperature = max31865.temperature(100.0, 430.0);
+    float rawTemperature = getNtcTemperature();
     float temperature = getFilteredTemperature(rawTemperature);
+    
+    // 更新温度曲线
+    updateTemperatureGraph(temperature);
+    
+    // 预测温度
+    float trend = getTemperatureTrend();
+    predictTemperature(temperature, trend);
+    
+    // 执行温度诊断
+    performTemperatureDiagnostics(temperature);
+    
+    // 记录温度数据
+    logTemperature(temperature);
     
     // 更新系统状态
     systemState.tempChangeRate = (temperature - systemState.lastTemperature) / 
@@ -223,6 +344,9 @@ void loop() {
 
     updateDisplay(temperature, output, startHeating);
   }
+
+  // 添加自动温度补偿
+  autoTemperatureCompensation();
 }
 
 float getFilteredTemperature(float rawTemperature) {
@@ -236,6 +360,87 @@ float getFilteredTemperature(float rawTemperature) {
     sum += tempReadings[i];
   }
   return sum / FILTER_SIZE;
+}
+
+// 读取ADC值并进行平均
+float readAveragedADC(int channel) {
+    float sum = 0;
+    for (int i = 0; i < ADC_SAMPLES; i++) {
+        sum += ads.readADC_SingleEnded(channel);
+        delay(1); // 短暂延时确保采样稳定
+    }
+    return sum / ADC_SAMPLES;
+}
+
+// 计算NTC电阻值（考虑校准参数）
+float calculateNtcResistance(float adcValue) {
+    float voltage = (adcValue / ADC_RESOLUTION) * (ADC_VREF + calibration.vref_offset);
+    float vout = voltage;
+    return R1 * (ADC_VREF - vout) / vout;
+}
+
+// 使用改进的Steinhart-Hart方程计算温度
+float calculateTemperature(float resistance) {
+    // 使用三参数Steinhart-Hart方程
+    float logR = log(resistance / R0);
+    float steinhart = logR / BETA;
+    steinhart += 1.0 / T0;
+    steinhart = 1.0 / steinhart;
+    float temperature = steinhart - 273.15;
+    
+    // 应用校准参数
+    temperature = (temperature + calibration.offset) * calibration.gain;
+    
+    return temperature;
+}
+
+// 温度漂移补偿
+float compensateTemperatureDrift(float currentTemp) {
+    unsigned long now = millis();
+    float timeDiff = (now - driftComp.lastStableTime) / 1000.0; // 转换为秒
+    
+    // 如果温度变化过大，更新稳定温度
+    if (abs(currentTemp - driftComp.lastStableTemp) > 1.0) {
+        driftComp.lastStableTemp = currentTemp;
+        driftComp.lastStableTime = now;
+        return currentTemp;
+    }
+    
+    // 计算允许的最大漂移
+    float maxDrift = driftComp.MAX_DRIFT_RATE * timeDiff;
+    
+    // 如果温度变化在允许范围内，应用漂移补偿
+    if (abs(currentTemp - driftComp.lastStableTemp) <= maxDrift) {
+        return currentTemp;
+    } else {
+        // 如果超出允许范围，限制温度变化
+        float drift = currentTemp - driftComp.lastStableTemp;
+        float compensatedTemp = driftComp.lastStableTemp + 
+            (drift > 0 ? maxDrift : -maxDrift);
+        return compensatedTemp;
+    }
+}
+
+// 获取NTC温度（包含所有优化）
+float getNtcTemperature() {
+    // 读取并平均ADC值
+    float adcValue = readAveragedADC(0);
+    
+    // 计算NTC电阻值
+    float resistance = calculateNtcResistance(adcValue);
+    
+    // 计算温度
+    float temperature = calculateTemperature(resistance);
+    
+    // 应用温度漂移补偿
+    temperature = compensateTemperatureDrift(temperature);
+    
+    return temperature;
+}
+
+// 温度校准函数（更新为支持多点校准）
+void calibrateTemperature(float knownTemp) {
+    addCalibrationPoint(knownTemp);
 }
 
 void performSafetyCheck(float temperature) {
@@ -347,93 +552,59 @@ void updateDisplay(float temperature, float pwm, bool isHeating) {
   u8g2.setCursor(4, 10);
   u8g2.print(isHeating ? "HEATING" : "STANDBY");
   
-  // 控制按钮区域 (0-36像素，右侧)
-  const int btnAreaX = 80;
-  const int btnWidth = 40;
-  const int btnHeight = 12;
+  // 温度曲线区域 (12-52像素)
+  drawTemperatureGraph();
   
-  // STOP按钮
-  u8g2.drawFrame(btnAreaX, 0, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 10);
-  u8g2.print(isHeating ? "STOP" : "START");
-  
-  // 目标温度显示
-  u8g2.drawFrame(btnAreaX, 12, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 22);
-  char setStr[5];
-  sprintf(setStr, "%d", (int)setpoint);
-  u8g2.print(setStr);
-  
-  // 最大温度显示
-  u8g2.drawFrame(btnAreaX, 24, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 34);
-  u8g2.print(MAX_TEMPERATURE);
-
-  // 当前温度大数字显示 (中间区域)
+  // 当前温度显示 (52-64像素)
   u8g2.setFont(u8g2_font_profont22_tf);
-  char tempStr[5];
-  sprintf(tempStr, "%d", (int)temperature);
+  char tempStr[6];
+  sprintf(tempStr, "%.1f", temperature);
   int tempWidth = u8g2.getStrWidth(tempStr);
-  u8g2.setCursor((80 - tempWidth) / 2 + 4, 34);  // 向右移动4像素
+  u8g2.setCursor((120 - tempWidth) / 2, 60);
   u8g2.print(tempStr);
-  u8g2.setFont(u8g2_font_profont12_tf);  // 切换到小字体显示°C
-  u8g2.print("°C");
-  
-  // 环境数据显示区域 (左侧)
-  u8g2.setFont(u8g2_font_profont10_tf);
-  // 环境温度
-  u8g2.setCursor(2, 25);
-  u8g2.print("A:");
-  u8g2.print((int)systemState.ambientTemperature);
+  u8g2.setFont(u8g2_font_profont12_tf);
   u8g2.print("C");
-  // 环境湿度
-  u8g2.setCursor(2, 34);
-  u8g2.print("H:");
-  u8g2.print((int)systemState.ambientHumidity);
+  
+  // 预测温度显示
+  if (tempPred.trend != 0.0) {
+    u8g2.setFont(u8g2_font_profont10_tf);
+    u8g2.setCursor(90, 60);
+    u8g2.print("->");
+    u8g2.print(tempPred.predictedTemp, 1);
+  }
+  
+  // 控制按钮区域 (64-76像素)
+  u8g2.drawFrame(0, 64, 120, 12);
+  u8g2.setFont(u8g2_font_profont12_tf);
+  u8g2.setCursor(4, 74);
+  u8g2.print("Set:");
+  u8g2.print(setpoint, 1);
+  u8g2.print("C");
+  
+  // PWM显示 (76-88像素)
+  u8g2.setCursor(4, 86);
+  u8g2.print("PWM:");
+  u8g2.print((int)((pwm / 255.0) * 100));
   u8g2.print("%");
   
-  // 进度条区域 (36-48像素)
-  const int barY = 40;
-  const int barHeight = 8;
+  // 环境数据显示 (88-100像素)
+  u8g2.setCursor(60, 86);
+  u8g2.print("A:");
+  u8g2.print(systemState.ambientTemperature, 1);
+  u8g2.print("C");
   
-  // 绘制进度条背景
-  u8g2.drawFrame(0, barY, 120, barHeight);
-  
-  // 绘制进度条刻度
-  for(int i = 0; i <= 4; i++) {
-    int x = (i * 120) / 4;
-    u8g2.drawVLine(x, barY + barHeight, 2);
-  }
-  
-  // 绘制进度条填充
-  if (isHeating) {
-    int fillWidth = (pwm / 255.0) * 118;
-    u8g2.drawBox(1, barY + 1, fillWidth, barHeight - 2);
-  }
-  
-  // 底部状态区域 (48-60像素)
-  u8g2.setFont(u8g2_font_profont12_tf);
-  
-  // PWM百分比显示
-  u8g2.setCursor(2, 58);
-  if (isHeating) {
-    char pwmStr[5];
-    sprintf(pwmStr, "%d%%", (int)((pwm / 255.0) * 100));
-    u8g2.print(pwmStr);
-  }
-
   // 如果处于紧急停止状态，显示警告信息
   if (systemState.isEmergencyStop) {
     u8g2.setDrawColor(1);
-    u8g2.drawBox(0, 0, 120, 60);
+    u8g2.drawBox(0, 0, 120, 100);
     u8g2.setDrawColor(0);
     u8g2.setFont(u8g2_font_profont22_tf);
-    u8g2.setCursor(10, 25);
+    u8g2.setCursor(10, 40);
     u8g2.print("EMERGENCY");
-    u8g2.setCursor(25, 45);
+    u8g2.setCursor(25, 60);
     u8g2.print("STOP");
   }
-
+  
   u8g2.sendBuffer();
 }
 
@@ -455,4 +626,305 @@ void displayError(const char* message) {
   
   u8g2.sendBuffer();
   errorState = true;
+}
+
+// 保存校准参数到EEPROM
+void saveCalibrationToEEPROM() {
+    EEPROM.begin(EEPROM_SIZE);
+    EEPROM.put(CALIBRATION_ADDR, calibration);
+    EEPROM.put(CALIBRATION_ADDR + sizeof(calibration), multiCal);
+    EEPROM.commit();
+    EEPROM.end();
+}
+
+// 从EEPROM读取校准参数
+void loadCalibrationFromEEPROM() {
+    EEPROM.begin(EEPROM_SIZE);
+    EEPROM.get(CALIBRATION_ADDR, calibration);
+    EEPROM.get(CALIBRATION_ADDR + sizeof(calibration), multiCal);
+    EEPROM.end();
+}
+
+// 多点温度校准
+void addCalibrationPoint(float knownTemp) {
+    if (multiCal.pointCount >= multiCal.MAX_POINTS) {
+        // 如果已满，移除最旧的点
+        for (int i = 0; i < multiCal.MAX_POINTS - 1; i++) {
+            multiCal.points[i][0] = multiCal.points[i + 1][0];
+            multiCal.points[i][1] = multiCal.points[i + 1][1];
+        }
+        multiCal.pointCount--;
+    }
+    
+    // 添加新点
+    float adcValue = readAveragedADC(0);
+    multiCal.points[multiCal.pointCount][0] = knownTemp;
+    multiCal.points[multiCal.pointCount][1] = adcValue;
+    multiCal.pointCount++;
+    
+    // 如果收集了足够的点，计算校准参数
+    if (multiCal.pointCount >= 2) {
+        calculateCalibrationParams();
+    }
+}
+
+// 计算校准参数
+void calculateCalibrationParams() {
+    if (multiCal.pointCount < 2) return;
+    
+    // 使用最小二乘法拟合
+    float sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (int i = 0; i < multiCal.pointCount; i++) {
+        sumX += multiCal.points[i][1];
+        sumY += multiCal.points[i][0];
+        sumXY += multiCal.points[i][1] * multiCal.points[i][0];
+        sumXX += multiCal.points[i][1] * multiCal.points[i][1];
+    }
+    
+    float n = multiCal.pointCount;
+    float slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    float intercept = (sumY - slope * sumX) / n;
+    
+    calibration.gain = slope;
+    calibration.offset = intercept;
+    
+    // 保存校准参数
+    saveCalibrationToEEPROM();
+}
+
+// 自动温度补偿
+void autoTemperatureCompensation() {
+    static unsigned long lastCompensationTime = 0;
+    const unsigned long COMPENSATION_INTERVAL = 300000; // 5分钟
+    
+    unsigned long now = millis();
+    if (now - lastCompensationTime >= COMPENSATION_INTERVAL) {
+        lastCompensationTime = now;
+        
+        // 如果系统稳定，进行自动补偿
+        if (abs(systemState.tempChangeRate) < 0.1) {
+            float currentTemp = getNtcTemperature();
+            float ambientTemp = systemState.ambientTemperature;
+            
+            // 计算温度偏差
+            float tempDiff = currentTemp - ambientTemp;
+            
+            // 如果偏差超过阈值，进行补偿
+            if (abs(tempDiff) > 1.0) {
+                calibration.offset -= tempDiff * 0.1; // 渐进式补偿
+                saveCalibrationToEEPROM();
+            }
+        }
+    }
+}
+
+// 温度诊断函数
+void performTemperatureDiagnostics(float currentTemp) {
+    unsigned long now = millis();
+    
+    // 更新诊断数据
+    tempDiagnostics.minTemp = min(tempDiagnostics.minTemp, currentTemp);
+    tempDiagnostics.maxTemp = max(tempDiagnostics.maxTemp, currentTemp);
+    tempDiagnostics.sumTemp += currentTemp;
+    tempDiagnostics.sumTempSquared += currentTemp * currentTemp;
+    tempDiagnostics.sampleCount++;
+    
+    // 定期计算统计值
+    if (now - tempDiagnostics.lastDiagnosticTime >= tempDiagnostics.DIAGNOSTIC_INTERVAL) {
+        tempDiagnostics.lastDiagnosticTime = now;
+        
+        // 计算平均值
+        tempDiagnostics.avgTemp = tempDiagnostics.sumTemp / tempDiagnostics.sampleCount;
+        
+        // 计算标准差
+        float variance = (tempDiagnostics.sumTempSquared / tempDiagnostics.sampleCount) - 
+                        (tempDiagnostics.avgTemp * tempDiagnostics.avgTemp);
+        tempDiagnostics.stdDev = sqrt(variance);
+        
+        // 重置统计值
+        tempDiagnostics.sumTemp = 0;
+        tempDiagnostics.sumTempSquared = 0;
+        tempDiagnostics.sampleCount = 0;
+        
+        // 检查温度稳定性
+        if (tempDiagnostics.stdDev > 0.5) {
+            displayError("温度波动过大");
+        }
+    }
+}
+
+// 记录温度数据
+void logTemperature(float temperature) {
+    unsigned long now = millis();
+    
+    if (now - tempLog.lastLogTime >= tempLog.LOG_INTERVAL) {
+        tempLog.lastLogTime = now;
+        
+        // 记录温度和对应时间戳
+        tempLog.temperatures[tempLog.logIndex] = temperature;
+        tempLog.timestamps[tempLog.logIndex] = now;
+        
+        // 更新索引
+        tempLog.logIndex = (tempLog.logIndex + 1) % tempLog.LOG_SIZE;
+        if (tempLog.logIndex == 0) {
+            tempLog.isFull = true;
+        }
+    }
+}
+
+// 获取温度趋势
+float getTemperatureTrend() {
+    if (!tempLog.isFull && tempLog.logIndex < 2) return 0.0;
+    
+    int startIndex = tempLog.isFull ? tempLog.logIndex : 0;
+    int endIndex = (tempLog.logIndex - 1 + tempLog.LOG_SIZE) % tempLog.LOG_SIZE;
+    
+    // 使用线性回归计算趋势
+    float sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    int n = 0;
+    
+    for (int i = startIndex; i != endIndex; i = (i + 1) % tempLog.LOG_SIZE) {
+        float x = (tempLog.timestamps[i] - tempLog.timestamps[startIndex]) / 1000.0; // 转换为秒
+        float y = tempLog.temperatures[i];
+        
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumXX += x * x;
+        n++;
+    }
+    
+    // 计算斜率（温度变化率，°C/s）
+    float slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    return slope;
+}
+
+// 更新温度曲线
+void updateTemperatureGraph(float temperature) {
+    // 更新温度范围
+    tempGraph.minTemp = min(tempGraph.minTemp, temperature);
+    tempGraph.maxTemp = max(tempGraph.maxTemp, temperature);
+    
+    // 确保温度范围至少有10度的跨度
+    if (tempGraph.maxTemp - tempGraph.minTemp < 10.0) {
+        tempGraph.maxTemp = tempGraph.minTemp + 10.0;
+    }
+    
+    // 更新温度点
+    tempGraph.points[tempGraph.pointIndex] = temperature;
+    tempGraph.pointIndex = (tempGraph.pointIndex + 1) % tempGraph.POINT_COUNT;
+}
+
+// 预测温度
+void predictTemperature(float currentTemp, float trend) {
+    unsigned long now = millis();
+    
+    if (now - tempPred.predictionTime >= tempPred.PREDICTION_INTERVAL) {
+        tempPred.predictionTime = now;
+        tempPred.currentTemp = currentTemp;
+        tempPred.trend = trend;
+        
+        // 预测5秒后的温度
+        tempPred.predictedTemp = currentTemp + trend * 5.0;
+    }
+}
+
+// 绘制温度曲线
+void drawTemperatureGraph() {
+    // 绘制坐标轴
+    u8g2.drawFrame(tempGraph.GRAPH_X, tempGraph.GRAPH_Y, 
+                   tempGraph.GRAPH_WIDTH, tempGraph.GRAPH_HEIGHT);
+    
+    // 计算温度范围
+    float tempRange = tempGraph.maxTemp - tempGraph.minTemp;
+    
+    // 绘制网格线
+    for (int i = 0; i <= tempGraph.GRID_COUNT; i++) {
+        // 水平网格线
+        int y = tempGraph.GRAPH_Y + (i * tempGraph.GRAPH_HEIGHT) / tempGraph.GRID_COUNT;
+        u8g2.drawHLine(tempGraph.GRAPH_X, y, tempGraph.GRAPH_WIDTH);
+        
+        // 垂直网格线
+        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.GRID_COUNT;
+        u8g2.drawVLine(x, tempGraph.GRAPH_Y, tempGraph.GRAPH_HEIGHT);
+        
+        // 显示温度刻度
+        float temp = tempGraph.maxTemp - (i * tempRange) / tempGraph.GRID_COUNT;
+        char tempStr[5];
+        sprintf(tempStr, "%.0f", temp);
+        u8g2.setFont(u8g2_font_profont10_tf);
+        u8g2.setCursor(tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH + 2, y - 2);
+        u8g2.print(tempStr);
+    }
+    
+    // 绘制设定温度线
+    int setpointY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                   ((setpoint - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+    u8g2.drawHLine(tempGraph.GRAPH_X, setpointY, tempGraph.GRAPH_WIDTH);
+    
+    // 绘制温度点和平滑曲线
+    float prevSmoothedTemp = tempGraph.points[tempGraph.pointIndex];
+    for (int i = 0; i < tempGraph.POINT_COUNT; i++) {
+        int pointIndex = (tempGraph.pointIndex + i) % tempGraph.POINT_COUNT;
+        float temp = tempGraph.points[pointIndex];
+        
+        // 应用平滑处理
+        float smoothedTemp = tempGraph.lastSmoothedTemp * (1 - tempGraph.SMOOTHING_FACTOR) + 
+                           temp * tempGraph.SMOOTHING_FACTOR;
+        tempGraph.lastSmoothedTemp = smoothedTemp;
+        
+        // 计算点的Y坐标
+        int y = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                ((smoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        
+        // 计算点的X坐标
+        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+        
+        // 绘制点
+        u8g2.drawPixel(x, y);
+        
+        // 如果有点，绘制平滑连线
+        if (i > 0) {
+            int prevY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                       ((prevSmoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+            int prevX = tempGraph.GRAPH_X + ((i - 1) * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+            
+            // 使用Bresenham算法绘制平滑线
+            int dx = abs(x - prevX);
+            int dy = abs(y - prevY);
+            int sx = (prevX < x) ? 1 : -1;
+            int sy = (prevY < y) ? 1 : -1;
+            int err = dx - dy;
+            
+            while (true) {
+                u8g2.drawPixel(prevX, prevY);
+                if (prevX == x && prevY == y) break;
+                int e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; prevX += sx; }
+                if (e2 < dx) { err += dx; prevY += sy; }
+            }
+        }
+        
+        prevSmoothedTemp = smoothedTemp;
+    }
+    
+    // 绘制预测线（虚线）
+    if (tempPred.trend != 0.0) {
+        int startY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                    ((tempPred.currentTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        int endY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                  ((tempPred.predictedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        
+        // 绘制虚线
+        int x = tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH - 20;
+        int y = startY;
+        int step = (endY - startY) / 10;
+        for (int i = 0; i < 10; i++) {
+            if (i % 2 == 0) {
+                u8g2.drawLine(x, y, x + 2, y + step);
+            }
+            x += 2;
+            y += step;
+        }
+    }
 }
