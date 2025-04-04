@@ -93,6 +93,31 @@ const int FILTER_SIZE = 5;
 float tempReadings[FILTER_SIZE] = {0};
 int filterIndex = 0;
 
+// 温度曲线显示参数
+struct TemperatureGraph {
+    static const int GRAPH_WIDTH = 120;
+    static const int GRAPH_HEIGHT = 40;
+    static const int GRAPH_X = 0;
+    static const int GRAPH_Y = 20;
+    static const int POINT_COUNT = 20;  // 显示20个点
+    static const int GRID_COUNT = 5;    // 网格线数量
+    float minTemp = 0.0;
+    float maxTemp = 100.0;
+    float points[POINT_COUNT] = {0};
+    int pointIndex = 0;
+    float lastSmoothedTemp = 0.0;  // 用于平滑曲线
+    const float SMOOTHING_FACTOR = 0.3;  // 平滑因子
+} tempGraph;
+
+// 温度预测参数
+struct TemperaturePrediction {
+    float currentTemp = 0.0;
+    float trend = 0.0;
+    float predictedTemp = 0.0;
+    unsigned long predictionTime = 0;
+    const unsigned long PREDICTION_INTERVAL = 5000; // 5秒预测间隔
+} tempPred;
+
 // 函数声明
 void updateDisplay(float temperature, float pwm, bool isHeating);
 void adjustPIDParameters();
@@ -100,6 +125,9 @@ void displayError(const char* message);
 void performSafetyCheck(float temperature);
 float getFilteredTemperature(float rawTemperature);
 void emergencyStop();
+void updateTemperatureGraph(float temperature);
+void predictTemperature(float currentTemp, float trend);
+void drawTemperatureGraph();
 
 void IRAM_ATTR readEncoderISR() {
   encoder.readEncoder_ISR();
@@ -173,6 +201,13 @@ void loop() {
     // 读取并过滤温度
     float rawTemperature = max31865.temperature(100.0, 430.0);
     float temperature = getFilteredTemperature(rawTemperature);
+    
+    // 更新温度曲线
+    updateTemperatureGraph(temperature);
+    
+    // 预测温度
+    float trend = systemState.tempChangeRate;
+    predictTemperature(temperature, trend);
     
     // 更新系统状态
     systemState.tempChangeRate = (temperature - systemState.lastTemperature) / 
@@ -338,6 +373,133 @@ void adjustPIDParameters() {
   myPID.SetTunings(Kp, Ki, Kd);
 }
 
+void updateTemperatureGraph(float temperature) {
+    // 更新温度范围
+    tempGraph.minTemp = min(tempGraph.minTemp, temperature);
+    tempGraph.maxTemp = max(tempGraph.maxTemp, temperature);
+    
+    // 确保温度范围至少有10度的跨度
+    if (tempGraph.maxTemp - tempGraph.minTemp < 10.0) {
+        tempGraph.maxTemp = tempGraph.minTemp + 10.0;
+    }
+    
+    // 更新温度点
+    tempGraph.points[tempGraph.pointIndex] = temperature;
+    tempGraph.pointIndex = (tempGraph.pointIndex + 1) % tempGraph.POINT_COUNT;
+}
+
+void predictTemperature(float currentTemp, float trend) {
+    unsigned long now = millis();
+    
+    if (now - tempPred.predictionTime >= tempPred.PREDICTION_INTERVAL) {
+        tempPred.predictionTime = now;
+        tempPred.currentTemp = currentTemp;
+        tempPred.trend = trend;
+        
+        // 预测5秒后的温度
+        tempPred.predictedTemp = currentTemp + trend * 5.0;
+    }
+}
+
+void drawTemperatureGraph() {
+    // 绘制坐标轴
+    u8g2.drawFrame(tempGraph.GRAPH_X, tempGraph.GRAPH_Y, 
+                   tempGraph.GRAPH_WIDTH, tempGraph.GRAPH_HEIGHT);
+    
+    // 计算温度范围
+    float tempRange = tempGraph.maxTemp - tempGraph.minTemp;
+    
+    // 绘制网格线
+    for (int i = 0; i <= tempGraph.GRID_COUNT; i++) {
+        // 水平网格线
+        int y = tempGraph.GRAPH_Y + (i * tempGraph.GRAPH_HEIGHT) / tempGraph.GRID_COUNT;
+        u8g2.drawHLine(tempGraph.GRAPH_X, y, tempGraph.GRAPH_WIDTH);
+        
+        // 垂直网格线
+        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.GRID_COUNT;
+        u8g2.drawVLine(x, tempGraph.GRAPH_Y, tempGraph.GRAPH_HEIGHT);
+        
+        // 显示温度刻度
+        float temp = tempGraph.maxTemp - (i * tempRange) / tempGraph.GRID_COUNT;
+        char tempStr[5];
+        sprintf(tempStr, "%.0f", temp);
+        u8g2.setFont(u8g2_font_profont10_tf);
+        u8g2.setCursor(tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH + 2, y - 2);
+        u8g2.print(tempStr);
+    }
+    
+    // 绘制设定温度线
+    int setpointY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                   ((setpoint - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+    u8g2.drawHLine(tempGraph.GRAPH_X, setpointY, tempGraph.GRAPH_WIDTH);
+    
+    // 绘制温度点和平滑曲线
+    float prevSmoothedTemp = tempGraph.points[tempGraph.pointIndex];
+    for (int i = 0; i < tempGraph.POINT_COUNT; i++) {
+        int pointIndex = (tempGraph.pointIndex + i) % tempGraph.POINT_COUNT;
+        float temp = tempGraph.points[pointIndex];
+        
+        // 应用平滑处理
+        float smoothedTemp = tempGraph.lastSmoothedTemp * (1 - tempGraph.SMOOTHING_FACTOR) + 
+                           temp * tempGraph.SMOOTHING_FACTOR;
+        tempGraph.lastSmoothedTemp = smoothedTemp;
+        
+        // 计算点的Y坐标
+        int y = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                ((smoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        
+        // 计算点的X坐标
+        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+        
+        // 绘制点
+        u8g2.drawPixel(x, y);
+        
+        // 如果有点，绘制平滑连线
+        if (i > 0) {
+            int prevY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                       ((prevSmoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+            int prevX = tempGraph.GRAPH_X + ((i - 1) * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+            
+            // 使用Bresenham算法绘制平滑线
+            int dx = abs(x - prevX);
+            int dy = abs(y - prevY);
+            int sx = (prevX < x) ? 1 : -1;
+            int sy = (prevY < y) ? 1 : -1;
+            int err = dx - dy;
+            
+            while (true) {
+                u8g2.drawPixel(prevX, prevY);
+                if (prevX == x && prevY == y) break;
+                int e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; prevX += sx; }
+                if (e2 < dx) { err += dx; prevY += sy; }
+            }
+        }
+        
+        prevSmoothedTemp = smoothedTemp;
+    }
+    
+    // 绘制预测线（虚线）
+    if (tempPred.trend != 0.0) {
+        int startY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                    ((tempPred.currentTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        int endY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
+                  ((tempPred.predictedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        
+        // 绘制虚线
+        int x = tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH - 20;
+        int y = startY;
+        int step = (endY - startY) / 10;
+        for (int i = 0; i < 10; i++) {
+            if (i % 2 == 0) {
+                u8g2.drawLine(x, y, x + 2, y + step);
+            }
+            x += 2;
+            y += step;
+        }
+    }
+}
+
 void updateDisplay(float temperature, float pwm, bool isHeating) {
   u8g2.clearBuffer();
   
@@ -347,93 +509,59 @@ void updateDisplay(float temperature, float pwm, bool isHeating) {
   u8g2.setCursor(4, 10);
   u8g2.print(isHeating ? "HEATING" : "STANDBY");
   
-  // 控制按钮区域 (0-36像素，右侧)
-  const int btnAreaX = 80;
-  const int btnWidth = 40;
-  const int btnHeight = 12;
+  // 温度曲线区域 (12-52像素)
+  drawTemperatureGraph();
   
-  // STOP按钮
-  u8g2.drawFrame(btnAreaX, 0, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 10);
-  u8g2.print(isHeating ? "STOP" : "START");
-  
-  // 目标温度显示
-  u8g2.drawFrame(btnAreaX, 12, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 22);
-  char setStr[5];
-  sprintf(setStr, "%d", (int)setpoint);
-  u8g2.print(setStr);
-  
-  // 最大温度显示
-  u8g2.drawFrame(btnAreaX, 24, btnWidth, btnHeight);
-  u8g2.setCursor(btnAreaX + 4, 34);
-  u8g2.print(MAX_TEMPERATURE);
-
-  // 当前温度大数字显示 (中间区域)
+  // 当前温度显示 (52-64像素)
   u8g2.setFont(u8g2_font_profont22_tf);
-  char tempStr[5];
-  sprintf(tempStr, "%d", (int)temperature);
+  char tempStr[6];
+  sprintf(tempStr, "%.1f", temperature);
   int tempWidth = u8g2.getStrWidth(tempStr);
-  u8g2.setCursor((80 - tempWidth) / 2 + 4, 34);  // 向右移动4像素
+  u8g2.setCursor((120 - tempWidth) / 2, 60);
   u8g2.print(tempStr);
-  u8g2.setFont(u8g2_font_profont12_tf);  // 切换到小字体显示°C
-  u8g2.print("°C");
-  
-  // 环境数据显示区域 (左侧)
-  u8g2.setFont(u8g2_font_profont10_tf);
-  // 环境温度
-  u8g2.setCursor(2, 25);
-  u8g2.print("A:");
-  u8g2.print((int)systemState.ambientTemperature);
+  u8g2.setFont(u8g2_font_profont12_tf);
   u8g2.print("C");
-  // 环境湿度
-  u8g2.setCursor(2, 34);
-  u8g2.print("H:");
-  u8g2.print((int)systemState.ambientHumidity);
+  
+  // 预测温度显示
+  if (tempPred.trend != 0.0) {
+    u8g2.setFont(u8g2_font_profont10_tf);
+    u8g2.setCursor(90, 60);
+    u8g2.print("->");
+    u8g2.print(tempPred.predictedTemp, 1);
+  }
+  
+  // 控制按钮区域 (64-76像素)
+  u8g2.drawFrame(0, 64, 120, 12);
+  u8g2.setFont(u8g2_font_profont12_tf);
+  u8g2.setCursor(4, 74);
+  u8g2.print("Set:");
+  u8g2.print(setpoint, 1);
+  u8g2.print("C");
+  
+  // PWM显示 (76-88像素)
+  u8g2.setCursor(4, 86);
+  u8g2.print("PWM:");
+  u8g2.print((int)((pwm / 255.0) * 100));
   u8g2.print("%");
   
-  // 进度条区域 (36-48像素)
-  const int barY = 40;
-  const int barHeight = 8;
+  // 环境数据显示 (88-100像素)
+  u8g2.setCursor(60, 86);
+  u8g2.print("A:");
+  u8g2.print(systemState.ambientTemperature, 1);
+  u8g2.print("C");
   
-  // 绘制进度条背景
-  u8g2.drawFrame(0, barY, 120, barHeight);
-  
-  // 绘制进度条刻度
-  for(int i = 0; i <= 4; i++) {
-    int x = (i * 120) / 4;
-    u8g2.drawVLine(x, barY + barHeight, 2);
-  }
-  
-  // 绘制进度条填充
-  if (isHeating) {
-    int fillWidth = (pwm / 255.0) * 118;
-    u8g2.drawBox(1, barY + 1, fillWidth, barHeight - 2);
-  }
-  
-  // 底部状态区域 (48-60像素)
-  u8g2.setFont(u8g2_font_profont12_tf);
-  
-  // PWM百分比显示
-  u8g2.setCursor(2, 58);
-  if (isHeating) {
-    char pwmStr[5];
-    sprintf(pwmStr, "%d%%", (int)((pwm / 255.0) * 100));
-    u8g2.print(pwmStr);
-  }
-
   // 如果处于紧急停止状态，显示警告信息
   if (systemState.isEmergencyStop) {
     u8g2.setDrawColor(1);
-    u8g2.drawBox(0, 0, 120, 60);
+    u8g2.drawBox(0, 0, 120, 100);
     u8g2.setDrawColor(0);
     u8g2.setFont(u8g2_font_profont22_tf);
-    u8g2.setCursor(10, 25);
+    u8g2.setCursor(10, 40);
     u8g2.print("EMERGENCY");
-    u8g2.setCursor(25, 45);
+    u8g2.setCursor(25, 60);
     u8g2.print("STOP");
   }
-
+  
   u8g2.sendBuffer();
 }
 
