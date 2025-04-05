@@ -176,6 +176,9 @@ struct TemperatureData {
     float predictedTemp = 0.0;
     float currentTemp = 0.0;
     unsigned long predictionTime = 0;
+    
+    // 添加温度历史记录数组
+    float temperatureHistory[POINT_COUNT] = {0};
 } tempData;
 
 // PID自适应控制参数
@@ -924,6 +927,11 @@ float getTemperatureTrend() {
 
 // 更新温度数据
 void updateTemperatureData(float temperature) {
+    // 更新温度点
+    tempData.points[tempData.pointIndex] = temperature;
+    tempData.temperatureHistory[tempData.pointIndex] = temperature;
+    tempData.pointIndex = (tempData.pointIndex + 1) % tempData.POINT_COUNT;
+    
     // 更新温度范围
     tempData.minTemp = min(tempData.minTemp, temperature);
     tempData.maxTemp = max(tempData.maxTemp, temperature);
@@ -932,10 +940,6 @@ void updateTemperatureData(float temperature) {
     if (tempData.maxTemp - tempData.minTemp < 10.0) {
         tempData.maxTemp = tempData.minTemp + 10.0;
     }
-    
-    // 更新温度点
-    tempData.points[tempData.pointIndex] = temperature;
-    tempData.pointIndex = (tempData.pointIndex + 1) % tempData.POINT_COUNT;
 }
 
 // 预测温度
@@ -954,101 +958,39 @@ void predictTemperature(float currentTemp, float trend) {
 
 // 绘制温度曲线
 void drawTemperatureGraph() {
-    // 绘制坐标轴
-    u8g2.drawFrame(tempData.GRAPH_X, tempData.GRAPH_Y, 
-                   tempData.GRAPH_WIDTH, tempData.GRAPH_HEIGHT);
+    // 绘制背景网格
+    u8g2.setDrawColor(1);
+    for (int i = 0; i <= 4; i++) {
+        int y = 15 + i * 10;
+        u8g2.drawHLine(0, y, 128);
+    }
+    for (int i = 0; i <= 8; i++) {
+        int x = i * 16;
+        u8g2.drawVLine(x, 15, 40);
+    }
     
-    // 计算温度范围
-    float tempRange = tempData.maxTemp - tempData.minTemp;
-    
-    // 绘制网格线
-    for (int i = 0; i <= tempData.GRID_COUNT; i++) {
-        // 水平网格线
-        int y = tempData.GRAPH_Y + (i * tempData.GRAPH_HEIGHT) / tempData.GRID_COUNT;
-        u8g2.drawHLine(tempData.GRAPH_X, y, tempData.GRAPH_WIDTH);
-        
-        // 垂直网格线
-        int x = tempData.GRAPH_X + (i * tempData.GRAPH_WIDTH) / tempData.GRID_COUNT;
-        u8g2.drawVLine(x, tempData.GRAPH_Y, tempData.GRAPH_HEIGHT);
-        
-        // 显示温度刻度
-        float temp = tempData.maxTemp - (i * tempRange) / tempData.GRID_COUNT;
-        char tempStr[5];
-        sprintf(tempStr, "%.0f", temp);
-        u8g2.setFont(u8g2_font_profont10_tf);
-        u8g2.setCursor(tempData.GRAPH_X + tempData.GRAPH_WIDTH + 2, y - 2);
-        u8g2.print(tempStr);
+    // 绘制温度曲线
+    u8g2.setDrawColor(1);
+    for (int i = 1; i < tempData.POINT_COUNT; i++) {
+        int x1 = (i - 1) * 2;
+        int x2 = i * 2;
+        int y1 = 55 - (int)(tempData.points[i - 1] * 0.4);
+        int y2 = 55 - (int)(tempData.points[i] * 0.4);
+        u8g2.drawLine(x1, y1, x2, y2);
     }
     
     // 绘制设定温度线
-    int setpointY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
-                   ((setpoint - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
-    u8g2.drawHLine(tempData.GRAPH_X, setpointY, tempData.GRAPH_WIDTH);
+    u8g2.setDrawColor(2);
+    int setpointY = 55 - (int)(setpoint * 0.4);
+    u8g2.drawHLine(0, setpointY, 128);
     
-    // 绘制温度点和平滑曲线
-    float prevSmoothedTemp = tempData.points[tempData.pointIndex];
-    for (int i = 0; i < tempData.POINT_COUNT; i++) {
-        int pointIndex = (tempData.pointIndex + i) % tempData.POINT_COUNT;
-        float temp = tempData.points[pointIndex];
-        
-        // 应用平滑处理
-        float smoothedTemp = tempData.lastSmoothedTemp * (1 - tempData.SMOOTHING_FACTOR) + 
-                           temp * tempData.SMOOTHING_FACTOR;
-        tempData.lastSmoothedTemp = smoothedTemp;
-        
-        // 计算点的Y坐标
-        int y = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
-                ((smoothedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
-        
-        // 计算点的X坐标
-        int x = tempData.GRAPH_X + (i * tempData.GRAPH_WIDTH) / tempData.POINT_COUNT;
-        
-        // 绘制点
-        u8g2.drawPixel(x, y);
-        
-        // 如果有点，绘制平滑连线
-        if (i > 0) {
-            int prevY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
-                       ((prevSmoothedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
-            int prevX = tempData.GRAPH_X + ((i - 1) * tempData.GRAPH_WIDTH) / tempData.POINT_COUNT;
-            
-            // 使用Bresenham算法绘制平滑线
-            int dx = abs(x - prevX);
-            int dy = abs(y - prevY);
-            int sx = (prevX < x) ? 1 : -1;
-            int sy = (prevY < y) ? 1 : -1;
-            int err = dx - dy;
-            
-            while (true) {
-                u8g2.drawPixel(prevX, prevY);
-                if (prevX == x && prevY == y) break;
-                int e2 = 2 * err;
-                if (e2 > -dy) { err -= dy; prevX += sx; }
-                if (e2 < dx) { err += dx; prevY += sy; }
-            }
-        }
-        
-        prevSmoothedTemp = smoothedTemp;
-    }
-    
-    // 绘制预测线（虚线）
-    if (tempData.trend != 0.0) {
-        int startY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
-                    ((tempData.currentTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
-        int endY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
-                  ((tempData.predictedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
-        
-        // 绘制虚线
-        int x = tempData.GRAPH_X + tempData.GRAPH_WIDTH - 20;
-        int y = startY;
-        int step = (endY - startY) / 10;
-        for (int i = 0; i < 10; i++) {
-            if (i % 2 == 0) {
-                u8g2.drawLine(x, y, x + 2, y + step);
-            }
-            x += 2;
-            y += step;
-        }
+    // 添加温度刻度
+    u8g2.setFont(u8g2_font_6x10_tf);
+    for (int i = 0; i <= 4; i++) {
+        int temp = i * 25;
+        int y = 15 + i * 10;
+        u8g2.setCursor(105, y + 3);
+        u8g2.printf("%d", temp);
     }
 }
 
