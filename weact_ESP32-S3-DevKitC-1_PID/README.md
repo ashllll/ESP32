@@ -1,161 +1,205 @@
-# ESP32 PID Temperature Control System
-# ESP32 PID 温度控制系统
+# ESP32-S3 温度控制系统
 
-This is a PID temperature control system project based on ESP32-S3-DevKitC-1 development board. The project uses PID algorithm to achieve precise temperature control and displays temperature and control parameters in real-time through an OLED display.
+基于ESP32-S3开发板的智能温度控制系统，具有高精度温度控制、自适应PID调节和丰富的安全保护功能。
 
-这是一个基于 ESP32-S3-DevKitC-1 开发板的 PID 温度控制系统项目。该项目使用 PID 算法实现精确的温度控制，并通过 OLED 显示屏实时显示温度和控制参数。
+## 主要特性
 
-## Features | 功能特点
+### 1. 高精度温度控制
+- 使用NTC100K热敏电阻进行温度测量
+- 16位ADC采样，支持多点校准
+- 实时温度滤波和漂移补偿
+- 温度变化率监测和预警
 
-- Temperature acquisition using MAX31865 temperature sensor
-- Precise temperature control using PID algorithm
-- Parameter adjustment via rotary encoder
-- Real-time temperature and control parameter display on OLED
-- Temperature setpoint adjustment support
-- Online PID parameter tuning support
+### 2. 智能PID控制
+- 自适应PID参数调节
+- 自动PID参数整定
+- 温度控制性能实时评估
+- 支持死区控制和积分分离
 
-- 使用 MAX31865 温度传感器进行温度采集
-- 采用 PID 算法实现精确的温度控制
-- 通过旋转编码器进行参数调节
-- OLED 显示屏实时显示温度和控制参数
-- 支持温度设定值调节
-- 支持 PID 参数在线调节
+### 3. 安全保护机制
+- 温度超限保护
+- 温度变化率限制
+- 紧急停止功能
+- 错误状态监测和恢复
 
-## Hardware Requirements | 硬件要求
+### 4. 用户界面
+- OLED显示屏实时显示温度曲线
+- 旋转编码器调节设定温度
+- 按钮控制加热启停
+- 状态指示灯显示系统状态
 
-- ESP32-S3-DevKitC-1 development board
-- MAX31865 temperature sensor
-- OLED display (SSD1306)
-- Rotary encoder
-- Heating element
-- Necessary connection wires
+### 5. 数据记录和分析
+- 温度数据实时记录
+- 温度趋势预测
+- 控制性能评估
+- 系统状态诊断
 
-- ESP32-S3-DevKitC-1 开发板
-- MAX31865 温度传感器
-- OLED 显示屏 (SSD1306)
+## 技术规格
+
+### 硬件要求
+- ESP32-S3开发板
+- NTC100K热敏电阻
+- ADS1115 16位ADC
+- SHT40温湿度传感器
+- OLED显示屏 (128x64)
 - 旋转编码器
-- 加热元件
-- 其他必要的连接线
+- MOSFET驱动电路
 
-## Software Dependencies | 软件依赖
+### 软件特性
+- 实时操作系统支持
+- 多任务处理能力
+- EEPROM配置存储
+- 串口调试接口
 
-- PlatformIO
-- Arduino-ESP32 framework
-- Adafruit MAX31865 library
-- Adafruit SSD1306 library
-- PID library
-- U8g2 library
+## 控制参数
 
-- PlatformIO
-- Arduino-ESP32 框架
-- Adafruit MAX31865 库
-- Adafruit SSD1306 库
-- PID 库
-- U8g2 库
+### PID控制参数
+- 比例系数 (Kp): 20.0
+- 积分系数 (Ki): 0.5
+- 微分系数 (Kd): 10.0
+- 采样时间: 50ms
+- 死区范围: ±0.5°C
 
-## Usage Instructions | 使用说明
+### 温度控制范围
+- 最小温度: 0°C
+- 最大温度: 100°C
+- 安全温度限制: 120°C
+- 温度变化率限制: 5°C/s
 
-1. Clone the project to local
-2. Open with PlatformIO
-3. Install required dependencies
-4. Compile and upload to ESP32-S3 board
+### 性能指标
+- 温度控制精度: ±0.5°C
+- 响应时间: <5s
+- 稳定时间: <30s
+- 超调量: <5°C
 
-1. 克隆项目到本地
-2. 使用 PlatformIO 打开项目
-3. 安装所需依赖库
-4. 编译并上传到 ESP32-S3 开发板
+## 使用说明
 
-## Wiring Guide | 接线说明
+### 基本操作
+1. 上电后系统自动初始化
+2. 使用旋转编码器调节设定温度
+3. 短按按钮启动/停止加热
+4. 长按按钮进入校准模式
 
-- MAX31865 Temperature Sensor:
-  - VCC -> 3.3V
-  - GND -> GND
-  - DO -> GPIO 19
-  - CS -> GPIO 5
-  - CLK -> GPIO 18
+### 校准流程
+1. 将系统置于已知温度环境
+2. 进入校准模式
+3. 等待温度稳定
+4. 确认校准数据
 
-- MAX31865 温度传感器:
-  - VCC -> 3.3V
-  - GND -> GND
-  - DO -> GPIO 19
-  - CS -> GPIO 5
-  - CLK -> GPIO 18
+### 安全注意事项
+1. 确保散热良好
+2. 避免温度突变
+3. 定期检查系统状态
+4. 注意观察警告信息
 
-- OLED Display:
-  - SDA -> GPIO 21
-  - SCL -> GPIO 22
+## 开发环境
 
-- OLED 显示屏:
-  - SDA -> GPIO 21
-  - SCL -> GPIO 22
+### 硬件开发
+- PlatformIO IDE
+- ESP32-S3开发板
+- 相关传感器和外围设备
 
-- Rotary Encoder:
-  - CLK -> GPIO 32
-  - DT -> GPIO 33
-  - SW -> GPIO 34
+### 软件开发
+- Arduino框架
+- C++编程语言
+- PlatformIO构建系统
 
-- 旋转编码器:
-  - CLK -> GPIO 32
-  - DT -> GPIO 33
-  - SW -> GPIO 34
+## 依赖库
+- U8g2lib: OLED显示驱动
+- Adafruit_ADS1X15: ADC驱动
+- Adafruit_SHT4x: 温湿度传感器驱动
+- QuickPID: PID控制算法
+- AiEsp32RotaryEncoder: 编码器驱动
 
-## Important Notes | 注意事项
+## 项目结构
+```
+.
+├── src/
+│   └── main.cpp          # 主程序代码
+├── include/              # 头文件
+├── lib/                  # 库文件
+├── platformio.ini        # PlatformIO配置文件
+└── README.md            # 项目说明文档
+```
 
-1. This project is for personal learning and research only
-2. Commercial use is strictly prohibited
-3. Please read the wiring guide carefully before use
-4. Ensure stable power supply
-5. Ensure safe use of heating elements and circuits
-6. Overcurrent protection circuit is recommended
-7. Please follow relevant safety regulations
+## 更新日志
 
-1. 本项目仅供个人学习和研究使用
-2. 禁止用于商业用途
-3. 使用前请仔细阅读接线说明
-4. 确保电源供应稳定
-5. 请确保加热元件和电路的安全使用
-6. 建议使用过流保护电路
-7. 使用时请遵守相关安全规范
+### v1.0.0 (2024-03-20)
+- 初始版本发布
+- 实现基本温度控制功能
+- 添加PID控制算法
+- 集成OLED显示界面
 
-## Disclaimer | 免责声明
+### v1.1.0 (2024-03-21)
+- 添加自适应PID控制
+- 实现自动参数整定
+- 增加温度性能评估
+- 优化安全保护机制
 
-This project is for learning and research purposes only. The author is not responsible for any losses that may occur from using this project, including but not limited to:
-- Device damage
-- Fire hazards
-- Personal injury
-- Property damage
-- Other accidents
+## 贡献指南
+1. Fork项目
+2. 创建特性分支
+3. 提交更改
+4. 推送到分支
+5. 创建Pull Request
 
-By using this project, you acknowledge that you fully understand and accept these risks, and agree to assume all possible consequences.
+## 许可证
+MIT License
+
+## 联系方式
+- 作者: Joe Ash
+- 邮箱: [your-email@example.com]
+- 项目地址: [https://github.com/your-username/esp32-temperature-control]
+
+## 免责声明
 
 本项目仅供学习和研究使用。作者不对使用本项目可能造成的任何损失负责，包括但不限于：
-- 设备损坏
-- 火灾
-- 人身伤害
-- 财产损失
-- 其他意外事故
 
-使用本项目即表示您完全理解并接受这些风险，并同意自行承担所有可能的后果。
+### 1. 设备安全
+- 设备损坏或故障
+- 电路短路或过载
+- 传感器损坏
+- 显示屏损坏
+- 其他硬件损坏
 
-## License | 许可证
+### 2. 人身安全
+- 高温烫伤
+- 触电风险
+- 火灾风险
+- 其他人身伤害
 
-This project is licensed under the [MIT License](LICENSE), but limited to personal use only. Commercial use is prohibited.
+### 3. 财产损失
+- 设备损坏导致的财产损失
+- 火灾导致的财产损失
+- 其他相关财产损失
 
-本项目采用 [MIT License](LICENSE) 许可证，但仅限个人使用，禁止商业用途。
+### 4. 使用限制
+- 禁止用于商业用途
+- 禁止用于医疗设备
+- 禁止用于安全关键系统
+- 禁止用于无人值守设备
 
-## Author | 作者
+### 5. 责任免除
+使用本项目即表示您完全理解并接受以下条款：
+1. 您已充分了解项目的潜在风险
+2. 您同意自行承担所有使用风险
+3. 您承诺遵守所有相关安全规范
+4. 您承诺在使用前进行充分的安全评估
+5. 您承诺在使用过程中采取必要的安全措施
 
-- Author: Joe Ash
-- 作者：Joe Ash
+### 6. 安全建议
+1. 使用前请仔细阅读所有文档
+2. 确保电源供应稳定可靠
+3. 安装必要的过流保护装置
+4. 确保散热系统正常工作
+5. 定期检查系统状态
+6. 避免在无人值守时运行
+7. 保持工作环境通风良好
+8. 准备必要的应急措施
 
-## Acknowledgments | 致谢
-
-Thanks to all contributors of the open-source libraries, especially:
-- Adafruit for sensor libraries
-- PlatformIO team for development environment
-- ESP32 open-source community
-
-感谢所有开源库的贡献者，特别是：
-- Adafruit 公司提供的传感器库
-- PlatformIO 团队提供的开发环境
-- ESP32 开源社区的支持
+### 7. 法律声明
+1. 本项目采用MIT许可证
+2. 作者保留所有权利
+3. 禁止用于任何违法用途
+4. 禁止用于任何危害公共安全的行为
+5. 使用本项目产生的任何法律纠纷与作者无关

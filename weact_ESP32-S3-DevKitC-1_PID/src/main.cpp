@@ -5,6 +5,27 @@
 #include <AiEsp32RotaryEncoder.h>
 #include <EEPROM.h>
 
+// 温度诊断结构体
+struct TemperatureDiagnostics {
+    // 温度范围
+    float minTemp = 1000.0;
+    float maxTemp = -1000.0;
+    
+    // 统计计算
+    float sumTemp = 0.0;
+    float sumTempSquared = 0.0;
+    unsigned long sampleCount = 0;
+    float avgTemp = 0.0;      // 平均温度
+    float stdDev = 0.0;       // 标准差
+    
+    // 时间控制
+    unsigned long lastDiagnosticTime = 0;
+    const unsigned long DIAGNOSTIC_INTERVAL = 5000; // 5秒诊断间隔
+};
+
+// 创建全局实例
+TemperatureDiagnostics tempDiagnostics;
+
 // 定义常量
 const int MOS_PIN = 14;  // GPIO14用于PWM输出
 const int MIN_TEMPERATURE = 0;
@@ -17,6 +38,15 @@ const unsigned long HEATING_CYCLE = 5000; // 5秒加热周期
 const unsigned long SAFETY_CHECK_INTERVAL = 1000; // 安全检查间隔
 const int MAX_ERROR_COUNT = 3; // 最大错误计数
 const float TEMP_CHANGE_THRESHOLD = 5.0; // 温度变化阈值 (°C/s)
+
+// EEPROM配置
+const int EEPROM_SIZE = 512;
+const int CALIBRATION_ADDR = 0;
+
+// 温度滤波器
+const int FILTER_SIZE = 5;
+float tempReadings[FILTER_SIZE] = {0};
+int filterIndex = 0;
 
 // NTC100K参数
 const float BETA = 3950.0;  // B值
@@ -81,11 +111,6 @@ unsigned long lastButtonPressTime = 0;
 bool lastButtonState = HIGH;
 bool waitingForSecondClick = false;
 
-// 误差历史记录
-const int ERROR_HISTORY_SIZE = 10;
-float errorHistory[ERROR_HISTORY_SIZE] = {0};
-int errorIndex = 0;
-
 // 系统状态变量
 struct SystemState {
     float lastTemperature = 0.0;
@@ -99,106 +124,190 @@ struct SystemState {
     float tempChangeRate = 0.0;
 } systemState;
 
-// 温度滤波器
-const int FILTER_SIZE = 5;
-float tempReadings[FILTER_SIZE] = {0};
-int filterIndex = 0;
-
-// 温度校准参数
+// 校准参数
 struct CalibrationParams {
     float offset = 0.0;      // 温度偏移
     float gain = 1.0;        // 温度增益
     float vref_offset = 0.0; // 参考电压偏移
 } calibration;
 
-// 温度漂移补偿
+// 温度漂移补偿结构体
 struct DriftCompensation {
     float lastStableTemp = 0.0;
     unsigned long lastStableTime = 0;
-    const unsigned long STABILITY_TIME = 5000; // 5秒稳定时间
-    const float MAX_DRIFT_RATE = 0.1; // 最大漂移率 (°C/s)
+    const float MAX_DRIFT_RATE = 0.1; // 最大允许漂移率 (°C/s)
 } driftComp;
 
-// EEPROM配置
-const int EEPROM_SIZE = 512;
-const int CALIBRATION_ADDR = 0;
-
-// 多点校准参数
+// 多点校准结构体
 struct MultiPointCalibration {
-    float points[3][2];  // [温度, ADC值]
+    static const int MAX_POINTS = 10;
+    float points[MAX_POINTS][2]; // [温度, ADC值]
     int pointCount = 0;
-    const int MAX_POINTS = 3;
 } multiCal;
 
-// 温度诊断参数
-struct TemperatureDiagnostics {
-    float minTemp = 1000.0;      // 最小温度
-    float maxTemp = -1000.0;     // 最大温度
-    float avgTemp = 0.0;         // 平均温度
-    float stdDev = 0.0;          // 标准差
-    unsigned long sampleCount = 0; // 采样计数
-    float sumTemp = 0.0;         // 温度总和
-    float sumTempSquared = 0.0;  // 温度平方和
-    unsigned long lastDiagnosticTime = 0;
-    const unsigned long DIAGNOSTIC_INTERVAL = 60000; // 1分钟诊断间隔
-} tempDiagnostics;
-
-// 温度记录参数
+// 温度日志结构体
 struct TemperatureLog {
-    static const int LOG_SIZE = 100;  // 记录100个点
-    float temperatures[LOG_SIZE];     // 温度记录
-    unsigned long timestamps[LOG_SIZE]; // 时间戳
-    int logIndex = 0;                // 当前记录索引
-    bool isFull = false;             // 记录是否已满
-    const unsigned long LOG_INTERVAL = 1000; // 1秒记录间隔
-    unsigned long lastLogTime = 0;    // 上次记录时间
+    static const int LOG_SIZE = 100;
+    static const unsigned long LOG_INTERVAL = 1000; // 1秒记录间隔
+    float temperatures[LOG_SIZE];
+    unsigned long timestamps[LOG_SIZE];
+    int logIndex = 0;
+    bool isFull = false;
+    unsigned long lastLogTime = 0;
 } tempLog;
 
-// 温度曲线显示参数
-struct TemperatureGraph {
+// 温度数据管理结构体
+struct TemperatureData {
+    static const int POINT_COUNT = 20;  // 显示点数
     static const int GRAPH_WIDTH = 120;
     static const int GRAPH_HEIGHT = 40;
     static const int GRAPH_X = 0;
     static const int GRAPH_Y = 20;
-    static const int POINT_COUNT = 20;  // 显示20个点
     static const int GRID_COUNT = 5;    // 网格线数量
-    float minTemp = 0.0;
-    float maxTemp = 100.0;
+    static const unsigned long PREDICTION_INTERVAL = 5000; // 5秒预测间隔
+    
     float points[POINT_COUNT] = {0};
     int pointIndex = 0;
-    float lastSmoothedTemp = 0.0;  // 用于平滑曲线
-    const float SMOOTHING_FACTOR = 0.3;  // 平滑因子
-} tempGraph;
-
-// 温度预测参数
-struct TemperaturePrediction {
-    float currentTemp = 0.0;
+    float minTemp = 0.0;
+    float maxTemp = 100.0;
+    float lastSmoothedTemp = 0.0;
+    const float SMOOTHING_FACTOR = 0.3;
     float trend = 0.0;
     float predictedTemp = 0.0;
+    float currentTemp = 0.0;
     unsigned long predictionTime = 0;
-    const unsigned long PREDICTION_INTERVAL = 5000; // 5秒预测间隔
-} tempPred;
+} tempData;
+
+// PID自适应控制参数
+struct AdaptivePIDParams {
+    float baseKp = 20.0;
+    float baseKi = 0.5;
+    float baseKd = 10.0;
+    float errorThreshold1 = 2.0;  // 小误差阈值
+    float errorThreshold2 = 5.0;  // 大误差阈值
+    float kpScale1 = 0.8;        // 小误差时Kp缩放系数
+    float kiScale1 = 1.2;        // 小误差时Ki缩放系数
+    float kdScale1 = 0.8;        // 小误差时Kd缩放系数
+    float kpScale2 = 1.2;        // 大误差时Kp缩放系数
+    float kiScale2 = 0.8;        // 大误差时Ki缩放系数
+    float kdScale2 = 1.2;        // 大误差时Kd缩放系数
+    float tempChangeThreshold = 0.5; // 温度变化阈值
+    float lastTemp = 0.0;
+    unsigned long lastUpdateTime = 0;
+} adaptivePID;
+
+// 配置参数结构体
+struct SystemConfig {
+    // PID参数
+    float kp = 20.0;
+    float ki = 0.5;
+    float kd = 10.0;
+    
+    // 温度控制参数
+    float minTemp = 0.0;
+    float maxTemp = 300.0;
+    float tempChangeThreshold = 5.0;
+    
+    // 安全参数
+    float maxSafeTemp = 120.0;
+    float maxTempChangeRate = 5.0;
+    int maxErrorCount = 3;
+    
+    // 校准参数
+    float calibrationOffset = 0.0;
+    float calibrationGain = 1.0;
+    
+    // 自适应控制参数
+    AdaptivePIDParams adaptiveParams;
+    
+    // 版本号，用于配置升级
+    uint8_t version = 1;
+} systemConfig;
+
+// EEPROM配置地址
+const int CONFIG_ADDR = 100;  // 避免与校准参数地址冲突
+
+// PID自整定参数
+struct PIDAutoTuneParams {
+    bool isTuning = false;
+    float outputStep = 50.0;      // 输出步长
+    float noiseBand = 0.5;        // 噪声带
+    float lookbackSec = 10.0;     // 回看时间
+    float setpoint = 0.0;         // 整定点
+    float peak1 = 0.0;            // 第一个峰值
+    float peak2 = 0.0;            // 第二个峰值
+    unsigned long peak1Time = 0;   // 第一个峰值时间
+    unsigned long peak2Time = 0;   // 第二个峰值时间
+    int peakCount = 0;            // 峰值计数
+    float lastInput = 0.0;        // 上次输入
+    bool isPeak = false;          // 是否在峰值
+    unsigned long lastTime = 0;    // 上次时间
+    float lastOutput = 0.0;       // 上次输出
+    bool isIncreasing = true;     // 输出是否增加
+} autoTune;
+
+// 温度控制性能评估
+struct ControlPerformance {
+    float maxOvershoot = 0.0;     // 最大超调量
+    float settlingTime = 0.0;     // 稳定时间
+    float steadyStateError = 0.0; // 稳态误差
+    float riseTime = 0.0;         // 上升时间
+    float peakTime = 0.0;         // 峰值时间
+    float lastSetpoint = 0.0;     // 上次设定值
+    unsigned long startTime = 0;   // 开始时间
+    bool isEvaluating = false;    // 是否在评估
+    float errorSum = 0.0;         // 误差积分
+    int errorCount = 0;           // 误差计数
+} controlPerformance;
+
+// 自动PID整定状态
+struct AutoTuneState {
+    bool isFirstTune = true;      // 是否是首次整定
+    bool isTuning = false;        // 是否正在整定
+    float lastTuneTemp = 0.0;     // 上次整定时的温度
+    unsigned long lastTuneTime = 0; // 上次整定时间
+    const unsigned long TUNE_INTERVAL = 3600000; // 1小时重新整定间隔
+    const float TEMP_CHANGE_THRESHOLD = 10.0; // 温度变化阈值，超过此值重新整定
+} autoTuneState;
 
 // 函数声明
+void setup();
+void loop();
 void updateDisplay(float temperature, float pwm, bool isHeating);
-void adjustPIDParameters();
-void displayError(const char* message);
-void performSafetyCheck(float temperature);
-float getFilteredTemperature(float rawTemperature);
-void emergencyStop();
-float getNtcTemperature();
-void calibrateTemperature(float knownTemp);
+void handleEncoder();
+void handleButton();
+void updateTemperature();
+void updatePID();
 void saveCalibrationToEEPROM();
 void loadCalibrationFromEEPROM();
+void calibrateTemperature(float knownTemp);
+void handleSerialCommands();
+void drawTemperatureGraph();
+float getNtcTemperature();
+float getFilteredTemperature(float rawTemperature);
+void adjustPIDParameters();
+void performSafetyCheck(float temperature);
+void emergencyStop();
+float readAveragedADC(int channel);
+float calculateNtcResistance(float adcValue);
+float calculateTemperature(float resistance);
+void displayError(const char* message);
 void addCalibrationPoint(float knownTemp);
 void calculateCalibrationParams();
-void autoTemperatureCompensation();
+float getTemperatureTrend();
+void predictTemperature(float currentTemp, float trend);
 void performTemperatureDiagnostics(float currentTemp);
 void logTemperature(float temperature);
-float getTemperatureTrend();
-void updateTemperatureGraph(float temperature);
-void predictTemperature(float currentTemp, float trend);
-void drawTemperatureGraph();
+void autoTemperatureCompensation();
+float compensateTemperatureDrift(float currentTemp);
+void updateTemperatureData(float temperature);
+void saveConfigToEEPROM();
+void loadConfigFromEEPROM();
+void adaptivePIDControl(float currentTemp, float setpoint);
+void startAutoTune(float setpoint);
+void runAutoTune();
+void evaluateControlPerformance(float currentTemp, float setpoint);
+void checkAutoTune();
 
 void IRAM_ATTR readEncoderISR() {
   encoder.readEncoder_ISR();
@@ -239,7 +348,19 @@ void setup() {
   // 初始化EEPROM并加载校准参数
   EEPROM.begin(EEPROM_SIZE);
   loadCalibrationFromEEPROM();
+  loadConfigFromEEPROM();
   EEPROM.end();
+
+  // 设置自适应PID参数
+  adaptivePID.baseKp = systemConfig.kp;
+  adaptivePID.baseKi = systemConfig.ki;
+  adaptivePID.baseKd = systemConfig.kd;
+
+  // 如果是首次运行或配置无效，进行初始整定
+  if (systemConfig.version != 1 || systemConfig.kp == 0) {
+    startAutoTune(80.0); // 使用80°C作为初始整定点
+    autoTuneState.isFirstTune = true;
+  }
 }
 
 void loop() {
@@ -283,7 +404,7 @@ void loop() {
     float temperature = getFilteredTemperature(rawTemperature);
     
     // 更新温度曲线
-    updateTemperatureGraph(temperature);
+    updateTemperatureData(temperature);
     
     // 预测温度
     float trend = getTemperatureTrend();
@@ -317,11 +438,7 @@ void loop() {
     if (!systemState.isEmergencyStop) {
       if (startHeating) {
         input = temperature;
-        adjustPIDParameters();
-        
-        // 直接使用PWM输出，不需要周期控制
-        ledcWrite(PWM_CHANNEL, (int)output);
-        heatingOn = output > 0;
+        updatePID();
       } else {
         ledcWrite(PWM_CHANNEL, 0);
         output = 0;
@@ -347,6 +464,9 @@ void loop() {
 
   // 添加自动温度补偿
   autoTemperatureCompensation();
+
+  // 检查是否需要重新整定
+  checkAutoTune();
 }
 
 float getFilteredTemperature(float rawTemperature) {
@@ -566,11 +686,11 @@ void updateDisplay(float temperature, float pwm, bool isHeating) {
   u8g2.print("C");
   
   // 预测温度显示
-  if (tempPred.trend != 0.0) {
+  if (tempData.trend != 0.0) {
     u8g2.setFont(u8g2_font_profont10_tf);
     u8g2.setCursor(90, 60);
     u8g2.print("->");
-    u8g2.print(tempPred.predictedTemp, 1);
+    u8g2.print(tempData.predictedTemp, 1);
   }
   
   // 控制按钮区域 (64-76像素)
@@ -720,6 +840,9 @@ void autoTemperatureCompensation() {
 
 // 温度诊断函数
 void performTemperatureDiagnostics(float currentTemp) {
+    static float avgTemp = 0.0;      // 静态变量用于存储平均值
+    static float stdDev = 0.0;       // 静态变量用于存储标准差
+    
     unsigned long now = millis();
     
     // 更新诊断数据
@@ -734,12 +857,12 @@ void performTemperatureDiagnostics(float currentTemp) {
         tempDiagnostics.lastDiagnosticTime = now;
         
         // 计算平均值
-        tempDiagnostics.avgTemp = tempDiagnostics.sumTemp / tempDiagnostics.sampleCount;
+        avgTemp = tempDiagnostics.sumTemp / tempDiagnostics.sampleCount;
         
         // 计算标准差
         float variance = (tempDiagnostics.sumTempSquared / tempDiagnostics.sampleCount) - 
-                        (tempDiagnostics.avgTemp * tempDiagnostics.avgTemp);
-        tempDiagnostics.stdDev = sqrt(variance);
+                        (avgTemp * avgTemp);
+        stdDev = sqrt(variance);
         
         // 重置统计值
         tempDiagnostics.sumTemp = 0;
@@ -747,7 +870,7 @@ void performTemperatureDiagnostics(float currentTemp) {
         tempDiagnostics.sampleCount = 0;
         
         // 检查温度稳定性
-        if (tempDiagnostics.stdDev > 0.5) {
+        if (stdDev > 0.5) {
             displayError("温度波动过大");
         }
     }
@@ -799,95 +922,95 @@ float getTemperatureTrend() {
     return slope;
 }
 
-// 更新温度曲线
-void updateTemperatureGraph(float temperature) {
+// 更新温度数据
+void updateTemperatureData(float temperature) {
     // 更新温度范围
-    tempGraph.minTemp = min(tempGraph.minTemp, temperature);
-    tempGraph.maxTemp = max(tempGraph.maxTemp, temperature);
+    tempData.minTemp = min(tempData.minTemp, temperature);
+    tempData.maxTemp = max(tempData.maxTemp, temperature);
     
     // 确保温度范围至少有10度的跨度
-    if (tempGraph.maxTemp - tempGraph.minTemp < 10.0) {
-        tempGraph.maxTemp = tempGraph.minTemp + 10.0;
+    if (tempData.maxTemp - tempData.minTemp < 10.0) {
+        tempData.maxTemp = tempData.minTemp + 10.0;
     }
     
     // 更新温度点
-    tempGraph.points[tempGraph.pointIndex] = temperature;
-    tempGraph.pointIndex = (tempGraph.pointIndex + 1) % tempGraph.POINT_COUNT;
+    tempData.points[tempData.pointIndex] = temperature;
+    tempData.pointIndex = (tempData.pointIndex + 1) % tempData.POINT_COUNT;
 }
 
 // 预测温度
 void predictTemperature(float currentTemp, float trend) {
     unsigned long now = millis();
     
-    if (now - tempPred.predictionTime >= tempPred.PREDICTION_INTERVAL) {
-        tempPred.predictionTime = now;
-        tempPred.currentTemp = currentTemp;
-        tempPred.trend = trend;
+    if (now - tempData.predictionTime >= tempData.PREDICTION_INTERVAL) {
+        tempData.predictionTime = now;
+        tempData.currentTemp = currentTemp;
+        tempData.trend = trend;
         
         // 预测5秒后的温度
-        tempPred.predictedTemp = currentTemp + trend * 5.0;
+        tempData.predictedTemp = currentTemp + trend * 5.0;
     }
 }
 
 // 绘制温度曲线
 void drawTemperatureGraph() {
     // 绘制坐标轴
-    u8g2.drawFrame(tempGraph.GRAPH_X, tempGraph.GRAPH_Y, 
-                   tempGraph.GRAPH_WIDTH, tempGraph.GRAPH_HEIGHT);
+    u8g2.drawFrame(tempData.GRAPH_X, tempData.GRAPH_Y, 
+                   tempData.GRAPH_WIDTH, tempData.GRAPH_HEIGHT);
     
     // 计算温度范围
-    float tempRange = tempGraph.maxTemp - tempGraph.minTemp;
+    float tempRange = tempData.maxTemp - tempData.minTemp;
     
     // 绘制网格线
-    for (int i = 0; i <= tempGraph.GRID_COUNT; i++) {
+    for (int i = 0; i <= tempData.GRID_COUNT; i++) {
         // 水平网格线
-        int y = tempGraph.GRAPH_Y + (i * tempGraph.GRAPH_HEIGHT) / tempGraph.GRID_COUNT;
-        u8g2.drawHLine(tempGraph.GRAPH_X, y, tempGraph.GRAPH_WIDTH);
+        int y = tempData.GRAPH_Y + (i * tempData.GRAPH_HEIGHT) / tempData.GRID_COUNT;
+        u8g2.drawHLine(tempData.GRAPH_X, y, tempData.GRAPH_WIDTH);
         
         // 垂直网格线
-        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.GRID_COUNT;
-        u8g2.drawVLine(x, tempGraph.GRAPH_Y, tempGraph.GRAPH_HEIGHT);
+        int x = tempData.GRAPH_X + (i * tempData.GRAPH_WIDTH) / tempData.GRID_COUNT;
+        u8g2.drawVLine(x, tempData.GRAPH_Y, tempData.GRAPH_HEIGHT);
         
         // 显示温度刻度
-        float temp = tempGraph.maxTemp - (i * tempRange) / tempGraph.GRID_COUNT;
+        float temp = tempData.maxTemp - (i * tempRange) / tempData.GRID_COUNT;
         char tempStr[5];
         sprintf(tempStr, "%.0f", temp);
         u8g2.setFont(u8g2_font_profont10_tf);
-        u8g2.setCursor(tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH + 2, y - 2);
+        u8g2.setCursor(tempData.GRAPH_X + tempData.GRAPH_WIDTH + 2, y - 2);
         u8g2.print(tempStr);
     }
     
     // 绘制设定温度线
-    int setpointY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
-                   ((setpoint - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
-    u8g2.drawHLine(tempGraph.GRAPH_X, setpointY, tempGraph.GRAPH_WIDTH);
+    int setpointY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
+                   ((setpoint - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
+    u8g2.drawHLine(tempData.GRAPH_X, setpointY, tempData.GRAPH_WIDTH);
     
     // 绘制温度点和平滑曲线
-    float prevSmoothedTemp = tempGraph.points[tempGraph.pointIndex];
-    for (int i = 0; i < tempGraph.POINT_COUNT; i++) {
-        int pointIndex = (tempGraph.pointIndex + i) % tempGraph.POINT_COUNT;
-        float temp = tempGraph.points[pointIndex];
+    float prevSmoothedTemp = tempData.points[tempData.pointIndex];
+    for (int i = 0; i < tempData.POINT_COUNT; i++) {
+        int pointIndex = (tempData.pointIndex + i) % tempData.POINT_COUNT;
+        float temp = tempData.points[pointIndex];
         
         // 应用平滑处理
-        float smoothedTemp = tempGraph.lastSmoothedTemp * (1 - tempGraph.SMOOTHING_FACTOR) + 
-                           temp * tempGraph.SMOOTHING_FACTOR;
-        tempGraph.lastSmoothedTemp = smoothedTemp;
+        float smoothedTemp = tempData.lastSmoothedTemp * (1 - tempData.SMOOTHING_FACTOR) + 
+                           temp * tempData.SMOOTHING_FACTOR;
+        tempData.lastSmoothedTemp = smoothedTemp;
         
         // 计算点的Y坐标
-        int y = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
-                ((smoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+        int y = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
+                ((smoothedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
         
         // 计算点的X坐标
-        int x = tempGraph.GRAPH_X + (i * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+        int x = tempData.GRAPH_X + (i * tempData.GRAPH_WIDTH) / tempData.POINT_COUNT;
         
         // 绘制点
         u8g2.drawPixel(x, y);
         
         // 如果有点，绘制平滑连线
         if (i > 0) {
-            int prevY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
-                       ((prevSmoothedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
-            int prevX = tempGraph.GRAPH_X + ((i - 1) * tempGraph.GRAPH_WIDTH) / tempGraph.POINT_COUNT;
+            int prevY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
+                       ((prevSmoothedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
+            int prevX = tempData.GRAPH_X + ((i - 1) * tempData.GRAPH_WIDTH) / tempData.POINT_COUNT;
             
             // 使用Bresenham算法绘制平滑线
             int dx = abs(x - prevX);
@@ -909,14 +1032,14 @@ void drawTemperatureGraph() {
     }
     
     // 绘制预测线（虚线）
-    if (tempPred.trend != 0.0) {
-        int startY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
-                    ((tempPred.currentTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
-        int endY = tempGraph.GRAPH_Y + tempGraph.GRAPH_HEIGHT - 
-                  ((tempPred.predictedTemp - tempGraph.minTemp) / tempRange * tempGraph.GRAPH_HEIGHT);
+    if (tempData.trend != 0.0) {
+        int startY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
+                    ((tempData.currentTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
+        int endY = tempData.GRAPH_Y + tempData.GRAPH_HEIGHT - 
+                  ((tempData.predictedTemp - tempData.minTemp) / tempRange * tempData.GRAPH_HEIGHT);
         
         // 绘制虚线
-        int x = tempGraph.GRAPH_X + tempGraph.GRAPH_WIDTH - 20;
+        int x = tempData.GRAPH_X + tempData.GRAPH_WIDTH - 20;
         int y = startY;
         int step = (endY - startY) / 10;
         for (int i = 0; i < 10; i++) {
@@ -926,5 +1049,313 @@ void drawTemperatureGraph() {
             x += 2;
             y += step;
         }
+    }
+}
+
+// 保存配置到EEPROM
+void saveConfigToEEPROM() {
+    EEPROM.begin(EEPROM_SIZE);
+    EEPROM.put(CONFIG_ADDR, systemConfig);
+    EEPROM.commit();
+    EEPROM.end();
+}
+
+// 从EEPROM加载配置
+void loadConfigFromEEPROM() {
+    EEPROM.begin(EEPROM_SIZE);
+    EEPROM.get(CONFIG_ADDR, systemConfig);
+    EEPROM.end();
+    
+    // 如果版本不匹配，使用默认值
+    if (systemConfig.version != 1) {
+        systemConfig = SystemConfig();
+        saveConfigToEEPROM();
+    }
+}
+
+// 自适应PID控制
+void adaptivePIDControl(float currentTemp, float setpoint) {
+    float error = setpoint - currentTemp;
+    unsigned long now = millis();
+    float deltaTime = (now - adaptivePID.lastUpdateTime) / 1000.0; // 转换为秒
+    
+    // 计算温度变化率
+    float tempChangeRate = (currentTemp - adaptivePID.lastTemp) / deltaTime;
+    
+    // 根据误差大小调整PID参数
+    if (abs(error) <= adaptivePID.errorThreshold1) {
+        // 小误差时，减小比例和微分作用，增加积分作用
+        Kp = adaptivePID.baseKp * adaptivePID.kpScale1;
+        Ki = adaptivePID.baseKi * adaptivePID.kiScale1;
+        Kd = adaptivePID.baseKd * adaptivePID.kdScale1;
+    } else if (abs(error) <= adaptivePID.errorThreshold2) {
+        // 中等误差时，使用基础参数
+        Kp = adaptivePID.baseKp;
+        Ki = adaptivePID.baseKi;
+        Kd = adaptivePID.baseKd;
+    } else {
+        // 大误差时，增加比例和微分作用，减小积分作用
+        Kp = adaptivePID.baseKp * adaptivePID.kpScale2;
+        Ki = adaptivePID.baseKi * adaptivePID.kiScale2;
+        Kd = adaptivePID.baseKd * adaptivePID.kdScale2;
+    }
+    
+    // 根据温度变化率进一步调整
+    if (abs(tempChangeRate) > adaptivePID.tempChangeThreshold) {
+        // 温度变化过快时，减小积分作用
+        Ki *= 0.5;
+    }
+    
+    // 更新历史值
+    adaptivePID.lastTemp = currentTemp;
+    adaptivePID.lastUpdateTime = now;
+    
+    // 更新PID控制器参数
+    myPID.SetTunings(Kp, Ki, Kd);
+}
+
+// PID自整定函数
+void startAutoTune(float setpoint) {
+    autoTune.isTuning = true;
+    autoTune.setpoint = setpoint;
+    autoTune.peakCount = 0;
+    autoTune.lastInput = getNtcTemperature();
+    autoTune.lastTime = millis();
+    autoTune.lastOutput = 0;
+    autoTune.isIncreasing = true;
+    autoTune.isPeak = false;
+    
+    // 开始性能评估
+    controlPerformance.isEvaluating = true;
+    controlPerformance.startTime = millis();
+    controlPerformance.lastSetpoint = setpoint;
+    controlPerformance.errorSum = 0;
+    controlPerformance.errorCount = 0;
+
+    // 根据当前温度调整整定参数
+    if (setpoint > 100.0) {
+        autoTune.outputStep = 30.0;  // 高温时使用较小的步长
+        autoTune.noiseBand = 0.3;    // 减小噪声带
+    } else {
+        autoTune.outputStep = 50.0;  // 低温时使用较大的步长
+        autoTune.noiseBand = 0.5;    // 增大噪声带
+    }
+    
+    // 记录整定开始时间
+    autoTuneState.lastTuneTime = millis();
+    autoTuneState.lastTuneTemp = setpoint;
+    
+    // 输出整定开始信息
+    Serial.println("Starting automatic PID tuning...");
+    Serial.printf("Setpoint: %.1f°C\n", setpoint);
+    Serial.printf("Output Step: %.1f\n", autoTune.outputStep);
+    Serial.printf("Noise Band: %.1f\n", autoTune.noiseBand);
+}
+
+// 执行PID自整定
+void runAutoTune() {
+    if (!autoTune.isTuning) return;
+    
+    unsigned long now = millis();
+    float input = getNtcTemperature();
+    float error = autoTune.setpoint - input;
+    
+    // 安全检查
+    if (input > MAX_SAFE_TEMPERATURE) {
+        Serial.println("Temperature exceeds safe limit during tuning!");
+        emergencyStop();
+        autoTune.isTuning = false;
+        return;
+    }
+    
+    // 如果温度变化过快，调整步长
+    if (abs(input - autoTune.lastInput) > 2.0) {
+        autoTune.outputStep *= 0.8;  // 减小步长
+        Serial.printf("Adjusting output step to %.1f\n", autoTune.outputStep);
+    }
+    
+    // 检测峰值
+    if (input > autoTune.lastInput && !autoTune.isPeak) {
+        autoTune.isPeak = true;
+        if (autoTune.peakCount == 0) {
+            autoTune.peak1 = input;
+            autoTune.peak1Time = now;
+        } else if (autoTune.peakCount == 1) {
+            autoTune.peak2 = input;
+            autoTune.peak2Time = now;
+        }
+        autoTune.peakCount++;
+    } else if (input < autoTune.lastInput && autoTune.isPeak) {
+        autoTune.isPeak = false;
+    }
+    
+    // 更新输出
+    if (now - autoTune.lastTime >= 100) { // 100ms更新一次
+        if (autoTune.isIncreasing) {
+            autoTune.lastOutput += autoTune.outputStep;
+            if (autoTune.lastOutput >= 255) {
+                autoTune.isIncreasing = false;
+            }
+        } else {
+            autoTune.lastOutput -= autoTune.outputStep;
+            if (autoTune.lastOutput <= 0) {
+                autoTune.isIncreasing = true;
+            }
+        }
+        
+        ledcWrite(PWM_CHANNEL, (int)autoTune.lastOutput);
+        autoTune.lastTime = now;
+    }
+    
+    // 如果收集到足够的峰值，计算PID参数
+    if (autoTune.peakCount >= 2) {
+        float amplitude = (autoTune.peak2 - autoTune.peak1) / 2.0;
+        float period = (autoTune.peak2Time - autoTune.peak1Time) / 1000.0; // 转换为秒
+        
+        // 使用Ziegler-Nichols方法计算PID参数
+        float Ku = 4.0 * autoTune.outputStep / (3.14159 * amplitude);
+        float Pu = period;
+        
+        // 设置PID参数
+        Kp = 0.6 * Ku;
+        Ki = 1.2 * Ku / Pu;
+        Kd = 0.075 * Ku * Pu;
+        
+        // 更新PID控制器
+        myPID.SetTunings(Kp, Ki, Kd);
+        
+        // 保存配置
+        systemConfig.kp = Kp;
+        systemConfig.ki = Ki;
+        systemConfig.kd = Kd;
+        saveConfigToEEPROM();
+        
+        // 停止自整定
+        autoTune.isTuning = false;
+        
+        // 如果整定成功，输出详细信息
+        Serial.println("PID tuning completed successfully!");
+        Serial.printf("New parameters: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", Kp, Ki, Kd);
+    }
+    
+    autoTune.lastInput = input;
+}
+
+// 评估控制性能
+void evaluateControlPerformance(float currentTemp, float setpoint) {
+    if (!controlPerformance.isEvaluating) return;
+    
+    unsigned long now = millis();
+    float error = setpoint - currentTemp;
+    
+    // 更新误差统计
+    controlPerformance.errorSum += abs(error);
+    controlPerformance.errorCount++;
+    
+    // 计算最大超调量
+    if (currentTemp > setpoint) {
+        float overshoot = currentTemp - setpoint;
+        if (overshoot > controlPerformance.maxOvershoot) {
+            controlPerformance.maxOvershoot = overshoot;
+            controlPerformance.peakTime = (now - controlPerformance.startTime) / 1000.0;
+        }
+    }
+    
+    // 计算上升时间（从10%到90%）
+    if (currentTemp >= 0.1 * setpoint && controlPerformance.riseTime == 0) {
+        controlPerformance.riseTime = (now - controlPerformance.startTime) / 1000.0;
+    }
+    
+    // 计算稳定时间（误差在±2%范围内）
+    if (abs(error) <= 0.02 * setpoint) {
+        controlPerformance.settlingTime = (now - controlPerformance.startTime) / 1000.0;
+    }
+    
+    // 计算稳态误差
+    if (now - controlPerformance.startTime >= 10000) { // 10秒后计算
+        controlPerformance.steadyStateError = controlPerformance.errorSum / controlPerformance.errorCount;
+        
+        // 输出性能评估结果
+        Serial.println("Control Performance Evaluation:");
+        Serial.printf("Max Overshoot: %.2f°C\n", controlPerformance.maxOvershoot);
+        Serial.printf("Rise Time: %.2f s\n", controlPerformance.riseTime);
+        Serial.printf("Peak Time: %.2f s\n", controlPerformance.peakTime);
+        Serial.printf("Settling Time: %.2f s\n", controlPerformance.settlingTime);
+        Serial.printf("Steady State Error: %.2f°C\n", controlPerformance.steadyStateError);
+        
+        // 停止评估
+        controlPerformance.isEvaluating = false;
+    }
+}
+
+// 修改updatePID函数以包含性能评估
+void updatePID() {
+    if (!startHeating) return;
+    
+    // 读取当前温度
+    float currentTemp = getNtcTemperature();
+    
+    // 如果正在自整定，运行自整定算法
+    if (autoTune.isTuning) {
+        runAutoTune();
+        return;
+    }
+    
+    // 应用自适应PID控制
+    adaptivePIDControl(currentTemp, setpoint);
+    
+    // 计算PID输出
+    input = currentTemp;
+    myPID.Compute();
+    
+    // 应用输出限制
+    output = constrain(output, 0, 255);
+    
+    // 更新PWM输出
+    ledcWrite(PWM_CHANNEL, (int)output);
+    heatingOn = output > 0;
+    
+    // 评估控制性能
+    evaluateControlPerformance(currentTemp, setpoint);
+}
+
+// 添加自动整定检查函数
+void checkAutoTune() {
+    unsigned long now = millis();
+    float currentTemp = getNtcTemperature();
+    
+    // 如果正在整定，继续执行整定过程
+    if (autoTune.isTuning) {
+        runAutoTune();
+        return;
+    }
+    
+    // 检查是否需要重新整定
+    bool needRetune = false;
+    
+    // 1. 检查是否达到重新整定时间间隔
+    if (now - autoTuneState.lastTuneTime >= autoTuneState.TUNE_INTERVAL) {
+        needRetune = true;
+    }
+    
+    // 2. 检查温度是否发生显著变化
+    if (abs(currentTemp - autoTuneState.lastTuneTemp) > autoTuneState.TEMP_CHANGE_THRESHOLD) {
+        needRetune = true;
+    }
+    
+    // 3. 检查控制性能是否变差
+    if (controlPerformance.steadyStateError > 1.0 || // 稳态误差过大
+        controlPerformance.maxOvershoot > 5.0 ||     // 超调量过大
+        controlPerformance.settlingTime > 60.0) {    // 稳定时间过长
+        needRetune = true;
+    }
+    
+    // 如果需要重新整定，启动整定过程
+    if (needRetune) {
+        // 使用当前温度作为整定点，但确保在合理范围内
+        float tuneSetpoint = constrain(currentTemp, 50.0, 150.0);
+        startAutoTune(tuneSetpoint);
+        autoTuneState.lastTuneTemp = currentTemp;
+        autoTuneState.lastTuneTime = now;
     }
 }
